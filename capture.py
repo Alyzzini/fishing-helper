@@ -44,6 +44,16 @@ class RegionCapture:
             raise RuntimeError('Cannot create screen capture surface')
 
     def grab(self, bbox):
+        try:
+            return self._grab(bbox)
+        except OSError:
+            # Display changes can invalidate a DC. Rebuild once, never loop
+            # indefinitely or continue with stale pixels.
+            self.close()
+            self.__init__()
+            return self._grab(bbox)
+
+    def _grab(self, bbox):
         x,y,right,bottom = bbox
         width,height = right-x,bottom-y
         if width <= 0 or height <= 0:
@@ -53,6 +63,7 @@ class RegionCapture:
                 gdi.SelectObject(self.dc,self.original)
                 gdi.DeleteObject(self.bitmap)
                 self.bitmap = None
+                self.size = None
             info = Info()
             info.header = Header(c.sizeof(Header),width,-height,1,32,0,width*height*4,0,0,0,0)
             bits = c.c_void_p()
@@ -68,6 +79,7 @@ class RegionCapture:
         return self.buffer[:,:,:3][:,:,::-1].copy()
 
     def close(self):
+        self.size = None
         if self.bitmap:
             gdi.SelectObject(self.dc,self.original)
             gdi.DeleteObject(self.bitmap)

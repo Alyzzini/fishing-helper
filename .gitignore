@@ -13,4 +13,3 @@ settings.tmp
 dist/
 build/
 *.egg-info/
-.vscode/
