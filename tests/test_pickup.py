@@ -221,3 +221,22 @@ class PickupTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_existing_loot_is_confirmed_before_cast(self):
+        h=self.helper
+        h.state='cast_delay'
+        h.deadline=0
+        h.collect_region=(0,0,60,60)
+        h.collect_capture=Mock()
+        h.collect_capture.grab.return_value=np.zeros((60,60,3),dtype=np.uint8)
+        h.collect_reader=Mock()
+        h.collect_reader.read.return_value=True
+        h.collect_text=Mock()
+        self.step(10,None)
+        self.assertEqual(h.state,'waiting')
+        h.mouse.assert_not_called()
+        self.step(10.2,None)
+        self.step(10.4,None)
+        self.assertEqual(h.state,'finish_wait')
+        self.step(12,None)
+        h.key_t.assert_called_with(True)
