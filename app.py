@@ -447,6 +447,14 @@ class App:
                 if detect(self.capture.grab(self.region)) is not None:
                     self.state = 'waiting'
                     return
+                # Resume with loot already on the rod without casting over it.
+                if self.collect_region and self.collect_reader.read(Image.fromarray(self.collect_capture.grab(self.collect_region))):
+                    self.catch_seen = True
+                    self.collect_reads = 0
+                    self.collect_due = 0
+                    self.state = 'waiting'
+                    self.detail.set('T prompt found before casting. Confirming collection.')
+                    return
                 self.mouse(True)
                 self.deadline = now + max(.1, min(5, self.cast_seconds.get()))
                 self.state = 'click'
