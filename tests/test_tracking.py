@@ -28,6 +28,23 @@ class DetectionTests(unittest.TestCase):
         for color in ('#00e0ff', '#1275cc'):
             self.assertIsNone(detect(Image.new('RGB', (80, 500), color)))
 
+    def test_warm_translucent_bar_tracks_dot(self):
+        image = Image.new('RGB', (100, 500), '#f7dcd3')
+        draw = ImageDraw.Draw(image)
+        draw.rounded_rectangle((10, 5, 89, 495), radius=12, fill='#b9a8a1', outline='white', width=3)
+        draw.rounded_rectangle((5, 210, 94, 255), radius=6, outline='#ffff40', width=3)
+        draw.rounded_rectangle((35, 450, 64, 475), radius=4, fill='white')
+        target, dot = detect(image)
+        self.assertAlmostEqual(target, 232.5, delta=3)
+        self.assertAlmostEqual(dot, 462.5, delta=3)
+
+    def test_yellow_object_on_bright_scenery_is_not_bar(self):
+        image = Image.new('RGB', (100, 500), '#f7dcd3')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((5, 210, 94, 255), outline='#ffff40', width=3)
+        draw.rectangle((35, 450, 64, 475), fill='white')
+        self.assertIsNone(detect(image))
+
 
 class ControllerTests(unittest.TestCase):
     def test_direction_and_reverse_setting(self):
