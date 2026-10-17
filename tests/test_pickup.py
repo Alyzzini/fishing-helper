@@ -218,10 +218,6 @@ class PickupTests(unittest.TestCase):
         self.assertEqual(h.state,'finish')
         h.key_t.assert_called_once_with(True)
 
-
-if __name__ == '__main__':
-    unittest.main()
-
     def test_existing_loot_is_confirmed_before_cast(self):
         h=self.helper
         h.state='cast_delay'
@@ -240,3 +236,7 @@ if __name__ == '__main__':
         self.assertEqual(h.state,'finish_wait')
         self.step(12,None)
         h.key_t.assert_called_with(True)
+
+
+if __name__ == '__main__':
+    unittest.main()
