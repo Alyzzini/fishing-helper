@@ -626,5 +626,29 @@ class App:
         self.root.destroy()
 
 
+def main():
+    # Keep the handle alive for the entire process; Windows releases it on exit.
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.CreateMutexW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    mutex = kernel.CreateMutexW(None, False, r'Local\AlyzziniFishingHelper')
+    if not mutex:
+        raise ctypes.WinError(ctypes.get_last_error())
+    already_running = ctypes.get_last_error() == 183
+    try:
+        if already_running:
+            user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+            user32.FindWindowW.restype = wintypes.HWND
+            hwnd = user32.FindWindowW(None, 'Fishing Helper')
+            if hwnd:
+                user32.ShowWindow(hwnd, 9)
+                user32.SetForegroundWindow(hwnd)
+            return
+        App().root.mainloop()
+    finally:
+        kernel.CloseHandle(mutex)
+
+
 if __name__ == '__main__':
-    App().root.mainloop()
+    main()
