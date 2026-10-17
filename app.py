@@ -32,44 +32,128 @@ except Exception:
     pass
 
 
+def _hsv_components(a):
+    """Return HSV-like hue (degrees), saturation, and value using NumPy only."""
+    x = a.astype(np.float32) / 255.0
+    r, g, b = x[:, :, 0], x[:, :, 1], x[:, :, 2]
+    mx = x.max(axis=2)
+    mn = x.min(axis=2)
+    delta = mx - mn
+    hue = np.zeros_like(mx)
+    nz = delta > 1e-6
+
+    mask = (mx == r) & nz
+    hue[mask] = 60.0 * np.mod((g[mask] - b[mask]) / delta[mask], 6.0)
+    mask = (mx == g) & nz
+    hue[mask] = 60.0 * ((b[mask] - r[mask]) / delta[mask] + 2.0)
+    mask = (mx == b) & nz
+    hue[mask] = 60.0 * ((r[mask] - g[mask]) / delta[mask] + 4.0)
+
+    sat = np.zeros_like(mx)
+    nonblack = mx > 1e-6
+    sat[nonblack] = delta[nonblack] / mx[nonblack]
+    return hue, sat, mx
+
+
 def detect(image):
-    """Locate the lime target and white dot inside a tightly selected bar."""
-    a = (np.asarray(image.convert('RGB')) if isinstance(image,Image.Image) else image).astype(np.int16)
-    r, g, b = a[:, :, 0], a[:, :, 1], a[:, :, 2]
-    green = (g > 150) & (g > b * 1.12) & (r < g * 1.40)
-    rows = np.flatnonzero(green.sum(axis=1) >= max(3, a.shape[1] * .035))
-    if len(rows) < 4:
+    """Locate the yellow/green target and the moving bright dot in the selected bar.
+
+    The real game changes the target between yellow and green and can tint the
+    white dot green while it overlaps the target.  Detection therefore uses
+    hue + shape instead of requiring a single lime-green color.
+    """
+    a = (np.asarray(image.convert('RGB')) if isinstance(image, Image.Image) else np.asarray(image)).astype(np.uint8)
+    height, width = a.shape[:2]
+    hue, sat, value = _hsv_components(a)
+
+    # The target outline/fill lives from yellow through green.  Water is blue,
+    # the bar is mostly gray, and wood/sand are generally below this hue range.
+    target_mask = (hue >= 35.0) & (hue <= 185.0) & (sat >= .20) & (value >= .28)
+    rows = np.flatnonzero(target_mask.sum(axis=1) >= max(2, int(width * .03)))
+    if len(rows) == 0:
         return None
-    bands = np.split(rows, np.flatnonzero(np.diff(rows) > 3) + 1)
+
+    bands = np.split(rows, np.flatnonzero(np.diff(rows) > 2) + 1)
+    candidates = []
     for band in bands:
-        if not 5 <= band[-1]-band[0] <= a.shape[0]*.24:
+        if len(band) == 0:
             continue
-        xs = np.flatnonzero(green[band[0]:band[-1]+1].sum(axis=0) >= 2)
-        if len(xs) < 8:
+        y0, y1 = int(band[0]), int(band[-1])
+        band_height = y1 - y0 + 1
+        if not 5 <= band_height <= max(14, int(height * .25)):
             continue
-        left, right = int(xs[0]), int(xs[-1])
-        width = right-left+1
-        if not .65 <= width/(band[-1]-band[0]+1) <= 4:
+        xs = np.flatnonzero(target_mask[y0:y1 + 1].sum(axis=0) >= 2)
+        if len(xs) < max(8, int(width * .25)):
             continue
-        # The translucent bar also becomes warm gray against sand/wood.
-        # Keep bright scenery and saturated cyan water out of this check.
-        mid = a[:, left+int(width*.28):left+max(int(width*.72), 1)]
-        if mid.size == 0:
+        x0, x1 = int(xs[0]), int(xs[-1])
+        span = x1 - x0 + 1
+        if span < width * .35:
             continue
-        mr, mg, mb = mid[:,:,0], mid[:,:,1], mid[:,:,2]
-        neutral_bar = (mid.max(axis=2) < 210) & (np.ptp(mid, axis=2) < 45)
-        bar_background = (mid.max(axis=2) < 150) | neutral_bar | ((mb > 50) & (mg < mb*.90) & (mr < mb*.75))
-        if bar_background.mean() < .40:
+
+        # Verify that the colored rectangle sits on the tall meter rather than
+        # on similarly colored scenery.  The meter interior is dark/neutral
+        # even when the world behind it is bright; this also keeps synthetic
+        # bright-scenery false positives out.
+        strip_left = x0 + int(span * .30)
+        strip_right = x1 - int(span * .30)
+        if strip_right <= strip_left:
             continue
-        white = (mid.min(axis=2) > 175) & (np.ptp(mid, axis=2) < 55)
-        scores = white.mean(axis=1)
-        candidates = np.flatnonzero(scores > .45)
-        groups = np.split(candidates, np.flatnonzero(np.diff(candidates) > 1) + 1)
-        groups = [v for v in groups if max(3, width*.08) <= len(v) <= width*.85]
-        if groups:
-            dot = max(groups, key=lambda v: float(scores[v].sum()))
-            return (float(band[0])+float(band[-1]))/2, float(dot.mean())
-    return None
+        strip = a[:, strip_left:strip_right + 1].astype(np.int16)
+        strip_max = strip.max(axis=2)
+        strip_spread = strip.max(axis=2) - strip.min(axis=2)
+        bar_like = (strip_max < 205) & (strip_spread < 85)
+        sr, sg, sb = strip[:, :, 0], strip[:, :, 1], strip[:, :, 2]
+        bar_like |= (strip_max < 165) & (sb > sr * .90) & (sb > sg * .75)
+        if bar_like.mean() < .28:
+            continue
+
+        candidates.append((int(target_mask[y0:y1 + 1].sum()), y0, y1, x0, x1))
+    if not candidates:
+        return None
+
+    _, y0, y1, x0, x1 = max(candidates)
+    target_y = (y0 + y1) / 2.0
+
+    # Search for the dot only inside the central portion of the target/bar.
+    # This ignores the white vertical border of the meter itself.
+    span = x1 - x0 + 1
+    left = max(0, x0 + int(span * .18))
+    right = min(width - 1, x1 - int(span * .18))
+    if right <= left:
+        return None
+    middle = a[:, left:right + 1]
+    dot_hue, dot_sat, dot_value = _hsv_components(middle)
+    middle_i = middle.astype(np.int16)
+    dot_min = middle_i.min(axis=2)
+    dot_spread = middle_i.max(axis=2) - dot_min
+
+    # Normally the dot is white/gray.  When it overlaps the target it becomes
+    # pale green.  The stricter brightness check prevents a warm gray meter
+    # background from being mistaken for one giant dot.
+    dot_mask = ((dot_min > 172) & (dot_spread < 85)) | (
+        (dot_min > 155)
+        & (dot_hue >= 35.0) & (dot_hue <= 185.0)
+        & (dot_value >= .70) & (dot_sat < .45)
+    )
+    row_score = dot_mask.sum(axis=1)
+    dot_rows = np.flatnonzero(row_score >= max(4, int(middle.shape[1] * .20)))
+    if len(dot_rows) == 0:
+        return None
+
+    dot_groups = np.split(dot_rows, np.flatnonzero(np.diff(dot_rows) > 1) + 1)
+    dots = []
+    for group in dot_groups:
+        if len(group) == 0:
+            continue
+        dot_height = int(group[-1] - group[0] + 1)
+        if max(5, int(height * .015)) <= dot_height <= max(45, int(height * .15)):
+            dots.append((int(row_score[group].sum()), int(group[0]), int(group[-1])))
+    if not dots:
+        return None
+
+    _, d0, d1 = max(dots)
+    dot_y = (d0 + d1) / 2.0
+    return target_y, dot_y
 
 
 class App:
@@ -84,6 +168,14 @@ class App:
             handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
             log.addHandler(handler)
             log.setLevel(logging.INFO)
+        self.paused_state = None
+        self.last_progress_value = None
+        self.progress_log_due = 0
+        self.bar_absent_since = None
+        self.new_bar_frames = 0
+        self.awaiting_new_bar = False
+        self.pickups = 0
+        self.session_text = tk.StringVar(value='Pickup sequences: 0')
         self.test_hold = False
         self.running = False
         self.held = False
@@ -109,7 +201,6 @@ class App:
         self.overlay = None
         self.state = 'idle'
         self.seen = 0
-        self.lost = None
         self.last_keys = {}
         self.status = tk.StringVar(value='STOPPED')
         self.detail = tk.StringVar(value='Select the narrow fishing bar before starting.')
@@ -121,7 +212,6 @@ class App:
             'finish_percent': ('Finish percentage (%)', 50, 100, 1, 98),
             'wait_seconds': ('Wait before T (seconds)', 0, 10, .1, 1.5),
             'hold_seconds': ('Hold T (seconds)', .1, 10, .1, 3.5),
-            'click_seconds': ('Final single click duration (seconds)', .05, 2, .05, .1),
         }
         try:
             saved = json.loads(self.settings_path.read_text())
@@ -135,46 +225,80 @@ class App:
             if not isinstance(value,(float,int)) or not math.isfinite(value):
                 value = default
             self.finish_settings[key] = tk.DoubleVar(value=max(low,min(high,round(value/step)*step)))
+        cast = saved.get('cast_seconds', .8)
+        if isinstance(cast, (int, float)) and math.isfinite(cast):
+            self.cast_seconds.set(max(.1, min(5, cast)))
         self.settings_window = None
         self.save_job = None
         self.sequence_text = tk.StringVar()
         self.settings_note = tk.StringVar(value='Saved automatically. Timing changes apply to the next pickup.')
         for variable in self.finish_settings.values():
             variable.trace_add('write',self.settings_changed)
+        self.cast_seconds.trace_add('write',self.settings_changed)
         self.update_sequence_text()
-        tk.Label(self.root, text='FISHING HELPER', fg='white', bg='#111827', font=('Segoe UI', 21, 'bold')).pack(pady=(20, 12))
-        self.badge = tk.Label(self.root, textvariable=self.status, wraplength=380, height=2, bg='#b91c1c', fg='white', font=('Segoe UI', 14, 'bold'), pady=12)
-        self.badge.pack(fill='x', padx=22)
-        tk.Label(self.root, textvariable=self.detail, wraplength=395, height=5, fg='#cbd5e1', bg='#111827', font=('Segoe UI', 10)).pack(pady=12)
-        ttk.Button(self.root, text='1. Select fishing bar area', command=self.select).pack(fill='x', padx=22, pady=5)
-        ttk.Button(self.root, text='2. Select bottom % text', command=lambda: self.select(True)).pack(fill='x', padx=22, pady=5)
-        tk.Label(self.root, textvariable=self.progress_text, fg='#fbbf24', bg='#111827').pack()
-        ttk.Button(self.root, text='3. Start / Stop (F8)', command=self.toggle).pack(fill='x', padx=22, pady=5)
-        tk.Label(self.root, text='Cyan line = dot   |   Orange line = target', fg='#cbd5e1', bg='#111827').pack()
-        tk.Label(self.root, textvariable=self.performance, fg='#93c5fd', bg='#111827').pack()
-        ttk.Checkbutton(self.root, text='Holding click moves the white dot UP', variable=self.up).pack(pady=9)
-        tk.Label(self.root, text='Tracking tolerance (pixels)', fg='white', bg='#111827').pack()
-        ttk.Scale(self.root, from_=2, to=20, variable=self.tolerance).pack(fill='x', padx=40)
-        cast_row = ttk.Frame(self.root)
-        cast_row.pack(pady=8)
-        ttk.Label(cast_row, text='Cast click hold (seconds): ').pack(side='left')
-        ttk.Spinbox(cast_row, from_=.1, to=5, increment=.1, textvariable=self.cast_seconds, width=5).pack(side='left')
-        ttk.Button(self.root,text='Customize finish sequence…',command=self.show_settings).pack(fill='x',padx=22,pady=5)
-        ttk.Button(self.root,text='Test T hold only (F7)',command=self.test_t_hold).pack(fill='x',padx=22,pady=5)
-        tk.Label(self.root,textvariable=self.sequence_text,wraplength=400,fg='#93c5fd',bg='#111827').pack(pady=5)
-        tk.Label(self.root, text='F9: emergency stop  •  Keep Roblox focused', fg='#94a3b8', bg='#111827').pack(pady=8)
-        # Tk fonts scale with Windows DPI; size the window from its actual contents.
-        self.root.update_idletasks()
-        width = max(450, self.root.winfo_reqwidth() + 32)
-        height = max(440, self.root.winfo_reqheight() + 24)
-        self.root.geometry(f'{width}x{height}+40+80')
-        self.root.minsize(width, height)
+        self.build_interface()
         self.root.protocol('WM_DELETE_WINDOW', self.close)
         self.root.after(30, self.tick)
 
+    def build_interface(self):
+        self.ui_scale = max(1.0, float(self.root.tk.call('tk', 'scaling')) / (96/72))
+        self.content_width = int(360*self.ui_scale)
+        style = ttk.Style(self.root)
+        style.theme_use('clam')
+        style.configure('.', font=('Segoe UI', 10), background='#111827', foreground='#e2e8f0')
+        style.configure('TFrame', background='#111827')
+        style.configure('TButton', background='#263449', foreground='#f8fafc', borderwidth=0, padding=(12, 9))
+        style.map('TButton', background=[('active', '#354862')])
+        style.configure('Accent.TButton', background='#2563eb', font=('Segoe UI', 10, 'bold'))
+        style.map('Accent.TButton', background=[('active', '#3b82f6')])
+        style.configure('TCheckbutton', background='#111827', foreground='#cbd5e1')
+        style.map('TCheckbutton', background=[('active', '#111827')])
+        style.configure('TNotebook', background='#111827', borderwidth=0)
+        style.configure('TNotebook.Tab', padding=(18, 8), background='#1e293b')
+        style.map('TNotebook.Tab', background=[('selected', '#334155')])
+        tk.Label(self.root, text='Fishing Helper', fg='#f8fafc', bg='#111827',
+                 font=('Segoe UI', 20, 'bold')).pack(anchor='w', padx=24, pady=(18, 2))
+        tk.Label(self.root, text='Track. Collect. Repeat.', fg='#94a3b8', bg='#111827').pack(anchor='w', padx=24, pady=(0, 14))
+        self.badge = tk.Label(self.root, textvariable=self.status, wraplength=self.content_width,
+                             bg='#b91c1c', fg='white', font=('Segoe UI', 12, 'bold'), pady=12)
+        self.badge.pack(fill='x', padx=24)
+        tk.Label(self.root, textvariable=self.detail, wraplength=self.content_width, height=4,
+                 justify='left', anchor='w', fg='#cbd5e1', bg='#111827').pack(fill='x', padx=24, pady=10)
+        tabs = ttk.Notebook(self.root)
+        tabs.pack(fill='both', expand=True, padx=24)
+        run, tuning = ttk.Frame(tabs), ttk.Frame(tabs)
+        tabs.add(run, text='Session')
+        tabs.add(tuning, text='Settings')
+        ttk.Button(run, text='1   Select fishing bar', command=self.select).pack(fill='x', pady=(12, 6))
+        ttk.Button(run, text='2   Select percentage text', command=lambda:self.select(True)).pack(fill='x', pady=6)
+        ttk.Label(run, textvariable=self.progress_text, wraplength=self.content_width, foreground='#fbbf24').pack(anchor='w', pady=6)
+        ttk.Button(run, text='Start / Pause    F8', style='Accent.TButton', command=self.toggle).pack(fill='x', pady=6)
+        ttk.Label(run, textvariable=self.session_text).pack(anchor='w', pady=(10, 3))
+        ttk.Label(run, textvariable=self.performance, foreground='#94a3b8').pack(anchor='w')
+        ttk.Label(run, text='Cyan = dot   ·   Orange = target', foreground='#94a3b8').pack(anchor='w', pady=6)
+        ttk.Label(run, textvariable=self.sequence_text, wraplength=self.content_width, foreground='#93c5fd').pack(anchor='w', pady=10)
+        ttk.Checkbutton(tuning, text='Holding click moves the dot up', variable=self.up).pack(anchor='w', pady=(14, 8))
+        ttk.Label(tuning, text='Tracking tolerance').pack(anchor='w')
+        ttk.Scale(tuning, from_=2, to=20, variable=self.tolerance).pack(fill='x', pady=8)
+        ttk.Label(tuning, text='Cast hold duration (seconds)').pack(anchor='w')
+        # A bounded scale cannot temporarily become empty like the old spinbox.
+        tk.Scale(tuning, from_=.1, to=5, resolution=.1, orient='horizontal', variable=self.cast_seconds,
+                 bg='#111827', fg='#93c5fd', troughcolor='#334155', highlightthickness=0).pack(fill='x')
+        ttk.Button(tuning, text='Pickup timing…', command=self.show_settings).pack(fill='x', pady=8)
+        ttk.Button(tuning, text='Test T hold    F7', command=self.test_t_hold).pack(fill='x', pady=4)
+        ttk.Label(tuning, text='F7 holds T without casting. Keep Roblox focused.', wraplength=self.content_width, foreground='#94a3b8').pack(anchor='w', pady=10)
+        ttk.Button(self.root, text='Stop and release inputs    F9', command=self.stop).pack(fill='x', padx=24, pady=(12, 6))
+        tk.Label(self.root, text='Keep Roblox visible and focused', fg='#94a3b8', bg='#111827').pack(pady=(0, 12))
+        self.root.update_idletasks()
+        self.root.geometry(f'{max(int(420*self.ui_scale),self.root.winfo_reqwidth())}x{self.root.winfo_reqheight()}+40+60')
+        self.root.resizable(False, False)
+
     def update_sequence_text(self):
         v = {key:variable.get() for key,variable in self.finish_settings.items()}
-        self.sequence_text.set(f'{v["finish_percent"]:.0f}% → wait {v["wait_seconds"]:g}s → hold T {v["hold_seconds"]:g}s → one {v["click_seconds"]:g}s click')
+        self.sequence_text.set(
+            f'{v["finish_percent"]:.0f}% → wait {v["wait_seconds"]:g}s → hold T {v["hold_seconds"]:g}s '
+            f'→ cast again ({self.cast_seconds.get():g}s left click)'
+        )
 
     def settings_changed(self,*args):
         self.update_sequence_text()
@@ -186,7 +310,7 @@ class App:
         self.save_job = None
         try:
             temp = self.settings_path.with_suffix('.tmp')
-            temp.write_text(json.dumps({key:v.get() for key,v in self.finish_settings.items()},indent=2))
+            temp.write_text(json.dumps({**{key:v.get() for key,v in self.finish_settings.items()}, 'cast_seconds': self.cast_seconds.get()},indent=2))
             temp.replace(self.settings_path)
             self.settings_note.set('Saved automatically. Timing changes apply to the next pickup.')
         except OSError:
@@ -203,8 +327,8 @@ class App:
         for key,(label,low,high,step,_) in self.setting_specs.items():
             tk.Label(win,text=label,fg='white',bg='#111827',font=('Segoe UI',11)).pack(anchor='w',padx=22,pady=(12,0))
             tk.Scale(win,from_=low,to=high,resolution=step,orient='horizontal',variable=self.finish_settings[key],
-                     length=420,bg='#111827',fg='#93c5fd',troughcolor='#334155',highlightthickness=0).pack(fill='x',padx=22)
-        tk.Label(win,textvariable=self.settings_note,wraplength=430,fg='#cbd5e1',bg='#111827').pack(padx=22,pady=12)
+                     length=int(420*self.ui_scale),bg='#111827',fg='#93c5fd',troughcolor='#334155',highlightthickness=0).pack(fill='x',padx=22)
+        tk.Label(win,textvariable=self.settings_note,wraplength=int(430*self.ui_scale),fg='#cbd5e1',bg='#111827').pack(padx=22,pady=12)
         ttk.Button(win,text='Restore defaults',command=self.reset_settings).pack(fill='x',padx=22,pady=5)
         ttk.Button(win,text='Done',command=win.destroy).pack(fill='x',padx=22,pady=(5,16))
 
@@ -216,6 +340,13 @@ class App:
         if down != self.held:
             user32.mouse_event(0x0002 if down else 0x0004, 0, 0, 0, 0)
             self.held = down
+
+    def begin_cast(self, now, label='CASTING — holding left click'):
+        """Start one cast using the same click duration every time."""
+        self.mouse(True)
+        self.deadline = now + max(.1, min(5, self.cast_seconds.get()))
+        self.state = 'click'
+        self.label(label)
 
     def key_t(self, down, force=False):
         if down != self.t_held or force:
@@ -255,8 +386,11 @@ class App:
         self.mouse(False)
         self.key_t(False)
         self.state = 'idle'
+        self.paused_state = None
+        self.awaiting_new_bar = False
+        self.bar_absent_since = None
+        self.new_bar_frames = 0
         self.seen = 0
-        self.lost = None
         self.finish_reads = 0
         self.progress_due = 0
         self.progress_armed = True
@@ -401,26 +535,33 @@ class App:
     def step(self):
         now = time.monotonic()
         if not self.game_focused():
-            if self.state == 'finish':
-                log.info('Pickup interrupted by focus loss')
-                self.stop()
-                self.detail.set('Pickup interrupted: Roblox lost focus while T was held. Stopped before the next click.')
-                return
+            if self.paused_state is None:
+                self.paused_state = self.state
+                log.info('Focus paused in %s', self.state)
             self.tracker.reset()
             self.mouse(False)
             self.key_t(False)
             self.label('PAUSED — focus Roblox')
+            self.detail.set('Waiting for Roblox focus. A paused pickup restarts its full wait and hold; no cast is sent early.')
             return
+        if self.paused_state is not None:
+            previous = self.paused_state
+            self.paused_state = None
+            log.info('Focus restored; resuming %s', previous)
+            if previous in ('finish', 'finish_pending', 'finish_wait'):
+                self.state = 'finish_wait'
+                self.deadline = now + self.finish_settings['wait_seconds'].get()
+            elif previous == 'click':
+                self.state = 'recast'
+                self.deadline = now + .5
+            self.label('RESUMING')
         if self.state in ('cast_delay', 'recast'):
             if now >= self.deadline:
                 # Starting during a live minigame should track, not cast into it.
                 if detect(self.capture.grab(self.region)) is not None:
                     self.state = 'waiting'
                     return
-                self.mouse(True)
-                self.deadline = now + max(.1, min(5, self.cast_seconds.get()))
-                self.state = 'click'
-                self.label('CASTING — holding click')
+                self.begin_cast(now)
             return
         if self.state == 'click':
             if now >= self.deadline:
@@ -462,6 +603,7 @@ class App:
                 self.detail.set('Waiting for Windows to confirm T is DOWN. Hold timer has not started.')
                 return
             if self.deadline is None:
+                now = time.monotonic()
                 self.deadline = now+self.pickup_hold_seconds
                 log.info('Windows confirmed T DOWN; continuous hold %.2fs',self.pickup_hold_seconds)
                 self.label('T CONFIRMED — holding',True)
@@ -475,26 +617,51 @@ class App:
                     self.stop()
                     self.detail.set('T test complete: Windows reported DOWN for the full hold. No cast click was sent.')
                     return
-                self.mouse(True)
-                self.state = 'click'
-                self.deadline = now + self.pickup_click_seconds
-                self.label('CASTING — one click')
+                self.pickups += 1
+                self.session_text.set(f'Pickup sequences: {self.pickups}')
+                self.awaiting_new_bar = True
+                self.bar_absent_since = None
+                self.new_bar_frames = 0
+                self.seen = 0
+                self.tracker.reset()
+                self.begin_cast(now, 'CASTING — next cast')
                 self.finish_reads = 0
                 self.progress_value = None
             return
         if now >= self.progress_due and self.progress_region:
-            self.progress_due = now + .05
+            self.progress_due = now + .012
             self.progress_value = self.reader.read(Image.fromarray(self.percent_capture.grab(self.progress_region)))
             self.progress_text.set(f'Progress: {self.progress_value}%' if self.progress_value is not None else 'Progress: unreadable — check % selection')
+            if self.progress_value is not None:
+                self.last_progress_value = self.progress_value
+            if now >= self.progress_log_due:
+                self.progress_log_due = now + 2
+                log.info('Progress=%s armed=%s state=%s', self.progress_value, self.progress_armed, self.state)
             threshold = self.finish_settings['finish_percent'].get()
             if self.progress_value is not None and self.progress_value < threshold-3:
                 self.progress_armed = True
-            self.finish_reads = self.finish_reads+1 if self.progress_armed and self.progress_value is not None and self.progress_value >= threshold else 0
-            if self.finish_reads >= 2:
-                log.info('Completion confirmed at %s%% (threshold %s%%)',self.progress_value,threshold)
-                self.begin_pickup(now,f'{self.progress_value}% confirmed')
+            if self.progress_armed and self.progress_value is not None and self.progress_value >= threshold:
+                self.finish_reads = 1
+                log.info('Completion reached at %s%% (threshold %s%%)',self.progress_value,threshold)
+                self.begin_pickup(now,f'{self.progress_value}% reached')
                 return
+            self.finish_reads = 0
         result = detect(self.capture.grab(self.region))
+        # A genuinely new meter can re-arm pickup even if early % reads failed.
+        # Require disappearance followed by several visible frames, never a timer alone.
+        if self.awaiting_new_bar:
+            if result is None:
+                if self.bar_absent_since is None:
+                    self.bar_absent_since = now
+                self.new_bar_frames = 0
+            elif self.bar_absent_since is not None and now-self.bar_absent_since >= .4:
+                self.new_bar_frames += 1
+                if self.new_bar_frames >= 3:
+                    self.progress_armed = True
+                    self.awaiting_new_bar = False
+                    log.info('New fishing meter confirmed; pickup re-armed')
+            else:
+                self.bar_absent_since = None
         observed = time.monotonic()
         self.frames += 1
         if observed-self.fps_started >= 1:
@@ -504,7 +671,6 @@ class App:
         self.tracking_lines(result)
         if result:
             self.seen += 1
-            self.lost = None
             if self.seen >= 3:
                 self.state = 'tracking'
                 self.label('FISH ON — tracking', True)
@@ -520,7 +686,11 @@ class App:
             self.seen = 0
             self.mouse(False)
             self.label('NO FISH — waiting')
-            self.detail.set('Mouse released: no fishing bar detected. Select tightly around the visible bar, not the water.')
+            last = self.last_progress_value
+            if last is not None and self.progress_armed:
+                self.detail.set(f'Bar not detected. Last progress: {last}%. Pickup needs {self.finish_settings["finish_percent"].get():g}%. If a catch is waiting, check the % selection; F7 tests collection.')
+            else:
+                self.detail.set('Waiting for the fishing bar. If a catch is already on the rod, use F7 to collect it before restarting.')
             # Losing visual tracking never means the catch is complete.
 
     def begin_pickup(self,now,reason):
@@ -530,7 +700,6 @@ class App:
         self.state = 'finish_wait'
         wait_seconds = self.finish_settings['wait_seconds'].get()
         self.pickup_hold_seconds = self.finish_settings['hold_seconds'].get()
-        self.pickup_click_seconds = self.finish_settings['click_seconds'].get()
         self.deadline = now+wait_seconds
         self.tracking_lines(None)
         self.label('FINISHED — waiting',True)
@@ -538,13 +707,15 @@ class App:
         self.detail.set(f'{reason}. Waiting {wait_seconds:g}s before holding T {ending}.')
 
     def close(self):
-        self.stop()
-        if self.save_job:
-            self.root.after_cancel(self.save_job)
-            self.save_settings()
-        self.capture.close()
-        self.percent_capture.close()
-        self.root.destroy()
+        try:
+            self.stop()
+            if self.save_job:
+                self.root.after_cancel(self.save_job)
+                self.save_settings()
+        finally:
+            self.capture.close()
+            self.percent_capture.close()
+            self.root.destroy()
 
 
 def main():
@@ -566,7 +737,12 @@ def main():
                 user32.ShowWindow(hwnd, 9)
                 user32.SetForegroundWindow(hwnd)
             return
-        App().root.mainloop()
+        helper = App()
+        try:
+            helper.root.mainloop()
+        finally:
+            helper.mouse(False)
+            helper.key_t(False)
     finally:
         kernel.CloseHandle(mutex)
 

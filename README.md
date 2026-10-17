@@ -1,22 +1,32 @@
 # Fishing Helper
 
-A Windows desktop application that uses computer vision to track a fishing minigame, control mouse input, and run a configurable pickup sequence.
+A Windows desktop tool for a fishing minigame, built with Python, Tkinter, NumPy, Pillow, and the Windows API. It combines region-based computer vision, predictive mouse control, local percentage recognition, and a timed collection sequence.
 
-Built with **Python, Tkinter, NumPy, Pillow, and the Windows API**. This portfolio project explores real-time visual feedback, lightweight text recognition, input automation, and performance tuning.
+## How it works
+
+**Cast → track the moving target → read the completion percentage → wait → hold T → cast again.**
+
+The default sequence starts collection at **98%**, waits **1.5 seconds**, and holds **T continuously for 3.5 seconds**. Existing saved timings are preserved. Initial and repeat casts use the same configurable mouse-hold duration. There is no T-prompt detector.
 
 ## Features
 
-- Selectable screen regions for the fishing bar and progress percentage.
-- Color-based detection of green/yellow targets and the white moving dot.
-- Cyan and orange overlay lines showing the detected dot and target positions.
-- Predictive control with a dead zone to reduce overshooting.
-- Local percentage recognition using font templates and vectorized comparisons.
-- Saved sliders for completion threshold, wait time, T hold time, and click duration.
-- Live tracking FPS, F8 start/stop, F9 emergency stop, and foreground-window checks.
+- Separate Session and Settings tabs, scaled for Windows high-DPI displays.
+- Yellow/green target detection and support for a dot tinted by the target.
+- Predictive mouse control with cyan dot and orange target overlays.
+- Percentage recognition using local font templates, including touching glyphs.
+- A target loop rate of 60 Hz; actual tracking FPS is shown in the app.
+- Verified Windows key-down timing, bounded input retries, and full-hold restart after a focus interruption.
+- Automatic pickup re-arming when a new fishing meter is confirmed, even if early percentages were unreadable.
+- One running instance, bounded rotating logs, reusable capture buffers, and one retry after a capture-surface failure.
+- Saved pickup and cast timings; F7 input test and F9 stop.
 
-## Quick start
+## Run
 
-Requires **Windows 10/11 and Python 3.11+ with Tkinter**. Percentage recognition uses standard Windows fonts. Use the primary monitor.
+Requires Windows 10/11, Python 3.11+ with Tkinter, and standard Windows fonts. Use the primary monitor.
+
+Double-click **Start.bat**. It creates a local virtual environment and installs the two dependencies when needed. It also repairs missing dependencies after an incomplete setup.
+
+Or run in a terminal:
 
 ```powershell
 py -3 -m venv .venv
@@ -24,98 +34,49 @@ py -3 -m venv .venv
 .venv\Scripts\python.exe app.py
 ```
 
-Alternatively, double-click `Start.bat` in File Explorer. In VS Code, use the terminal commands above; F5 on a batch file is not the launch method.
+For VS Code, open this folder, run Start.bat once, install the recommended Python extensions, and choose **Fishing Helper** in Run and Debug. The included launch configuration uses the project's virtual environment.
 
-## Using the app
+## Set up a session
 
-1. Start fishing manually so the vertical bar and percentage are visible.
-2. Select the entire fishing bar, including its target and dot.
-3. Select only the bottom number and `%` symbol; exclude Exit.
-4. Press **F8**, then focus the game and position the pointer over it within two seconds.
-5. Press **F9** to stop.
+1. Start a catch manually to make the meter and percentage visible.
+2. Choose **Select fishing bar** and enclose the entire narrow meter.
+3. Choose **Select percentage text** and include every digit plus `%`, leaving enough room for `100%`. Exclude the Exit button.
+4. Press **F8**, focus Roblox, and keep the pointer over the game.
+5. Use **F9** to stop and release inputs.
 
-The **cyan line** follows the dot; the **orange line** marks the target center. The status shows whether the mouse is held or released. Reverse the UP checkbox if holding the mouse moves the dot down. Reselect areas after moving the game or changing resolution.
+In Settings, adjust tracking direction, tolerance, cast duration, or **Pickup timing**. F7 tests the configured T hold without casting. The count is completed pickup *sequences*, not independently verified items in inventory.
 
-### Finish sequence
+## Reliability and troubleshooting
 
-Two consecutive valid readings at or above the selected threshold trigger pickup. Defaults:
+- **Waiting with a catch on the rod:** inspect the last percentage in the status. If the completion reading was missed, use F7 to collect, then reselect the percentage area. The app does not infer success from a missing meter.
+- **Paused:** give Roblox focus. Inputs are released while another app has focus. An interrupted pickup restarts its wait and full hold after focus returns.
+- **T input failure:** Windows must confirm T is down. Two failed retries stop the session without casting.
+- **Resolution or camera changes:** reselect the capture areas. A fixed selection cannot follow a relocated UI.
+- **Capture failure:** the capture surface is rebuilt once; persistent failures stop with an error instead of using stale pixels.
 
-**98% → release mouse → wait 1.5 seconds → hold T for 3.5 seconds → release T → click once.**
+`pickup.log` records percentage readings, pickup triggers, key transitions, focus changes, and failures. It rotates at 150 KB with one backup. Logs and settings remain local and are excluded from Git.
 
-Open **Customize finish sequence** to adjust:
+This is screen-based automation. OCR can miss or misread a frame, and Windows input confirmation does not prove the game accepted it. Disconnects, hidden or moved UI, and game updates can require intervention. It is not guaranteed to run unattended indefinitely.
 
-| Setting | Range | Default |
-| --- | --- | --- |
-| Completion threshold | 50–100% | 98% |
-| Wait before T | 0–10 seconds | 1.5 seconds |
-| T hold duration | 0.1–10 seconds | 3.5 seconds |
-| Final click duration | 0.05–2 seconds | 0.1 seconds |
-
-Settings save to `settings.json`, which is excluded from version control. Timings are captured at pickup start, so slider changes affect the next pickup. The initial casting hold is configured separately.
-
-Lost tracking or an unreadable percentage alone never counts as completion. After pickup, progress must fall below the threshold minus three percentage points to arm pickup again. Losing focus during a T hold releases input and stops the sequence.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    A[Selected screen regions] --> B[Reusable Windows capture surfaces]
-    B --> C[Color and shape detection]
-    C --> D[Predictive mouse controller]
-    C --> E[Tracking overlays]
-    B --> F[Percentage template matching]
-    F --> G[Completion state machine]
-    G --> H[Timed key hold and single click]
-```
+## Design
 
 | File | Responsibility |
 | --- | --- |
-| `app.py` | Tkinter UI, detection, overlays, scheduling, and state transitions |
-| `capture.py` | Region-only GDI capture with reusable buffers |
-| `control.py` | Velocity prediction and input hysteresis |
-| `progress.py` | Local percentage glyph matching |
-| `keyboard_input.py` | Windows scan-code key transitions |
-| `tests/` | Detection, control, percentage, and pickup regression tests |
+| `app.py` | Session state machine, UI, overlays, and input scheduling |
+| `capture.py` | Reusable GDI region captures and bounded recovery |
+| `control.py` | Predictive tracking and hysteresis |
+| `progress.py` | Percentage segmentation and template recognition |
+| `keyboard_input.py` | Physical scan-code input through SendInput |
+| `tests/` | Detection, timing, repeated-cycle, focus, and recovery regressions |
 
-The tracking loop targets 60 updates per second. Percentage recognition runs on a separate 50 ms schedule within the same event loop. Status text updates less frequently than mouse control and tracking lines.
+Pickup timings are snapshotted when a catch completes. A hold counts only after Windows reports the key down. If key state is lost, the continuous timer restarts. Pickup is disarmed after collection until a lower percentage or a confirmed new meter establishes a new cycle, preventing repeated pickup from stale completion text.
 
-## Performance work
-
-For a 130 × 800 region, local development measurements showed median capture time decreasing from approximately **69 ms with Pillow screen capture to 7 ms with reusable region-only Windows capture**. Vectorized percentage matching decreased from approximately **3.3 ms to 1.0 ms**.
-
-These are measurements from one development machine, not a cross-device benchmark. Actual gameplay FPS depends on hardware, game rendering, and selected regions. The app displays its measured tracking rate.
-
-## Tests
+## Validation
 
 ```powershell
-python -m unittest discover -s tests -v
+.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The suite covers target colors, bottom-edge dot detection, empty-water rejection, controller direction and braking, percentage boundaries, completion confirmation, timing snapshots, and ordered key/mouse events. Input delivery is mocked; tests do not control a live game. GitHub Actions is configured for Windows with Python 3.11, 3.12, and 3.13.
+The automated suite includes 1,000 simulated collection cycles, exact wait/hold boundaries, stale-percentage suppression, missed-low-percentage recovery, focus interruption, failed key confirmation, and capture retry limits. GitHub Actions runs the suite on Windows with Python 3.11, 3.12, and 3.13.
 
-## Limitations
-
-- Tuned for the minigame colors and layout used during development; other themes need calibration.
-- Percentage recognition can fail with occlusion, extra objects in the selection, or unfamiliar fonts.
-- The foreground title check looks for Roblox; it cannot detect in-game chat or menus. Keep them closed while running.
-- Windows reporting a held key does not guarantee the game interprets it as intended. Pickup timing needs live testing.
-- Capture exclusion for overlays requires a supported Windows version.
-- Independent project, not affiliated with Roblox. Use automation only where permitted.
-
-## Development notes
-
-Created through an **AI-assisted development workflow**, with hands-on gameplay testing and iterative feedback. Engineering lessons included reducing capture latency, diagnosing detection through overlays, separating lost tracking from completion, and making input timing observable and configurable.
-
-
-### Diagnosing pickup (F7)
-
-Press **F7** or **Test T hold only**, then focus Roblox within two seconds. This holds T for your configured duration without sending a casting click. **F9** still stops it. No screen regions need to be selected for this test.
-
-Pickup now starts its timer only after Windows reports T as DOWN. If that state is lost, the app reasserts key-down without sending a key-up, resets the continuous hold timer, and allows at most two retries. If Windows never confirms the hold, pickup stops without casting. Focus loss also stops pickup. The display distinguishes waiting for confirmation from a confirmed hold; a confirmed Windows hold still needs validation against the game's behavior.
-
-A small rotating `pickup.log` records completion triggers, key transitions, confirmation, retries, and focus interruptions. It stays local and is excluded from Git. This helps distinguish a missed percentage trigger from input trouble.
-
-
-### Pickup sequence
-
-Cast, track the fishing minigame, confirm 98% or higher, wait 1.5 seconds, hold T continuously for 3.5 seconds, release T, and click once to cast again. Select the fishing bar and bottom percentage text before F8. There is no T prompt detector.
+A local capture stress check exercised 1,000 region captures with alternating sizes and returned GDI resource usage to its initial count. Simulated tests and resource checks do not replace live gameplay validation.

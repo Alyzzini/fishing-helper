@@ -10,6 +10,15 @@ class PickupTests(unittest.TestCase):
     def setUp(self):
         self.helper = App.__new__(App)
         h = self.helper
+        h.paused_state = None
+        h.last_progress_at = None
+        h.last_progress_value = None
+        h.progress_log_due = 0
+        h.awaiting_new_bar = False
+        h.bar_absent_since = None
+        h.new_bar_frames = 0
+        h.pickups = 0
+        h.session_text = Mock()
         h.state = 'tracking'
         h.progress_due = 0
         h.progress_region = (0, 0, 100, 40)
@@ -23,6 +32,8 @@ class PickupTests(unittest.TestCase):
         h.held = False
         h.test_hold = False
         h.tracker = Mock()
+        h.tolerance = Mock(get=Mock(return_value=5))
+        h.up = Mock(get=Mock(return_value=True))
         h.reader = Mock()
         h.capture = Mock()
         h.percent_capture = Mock()
@@ -34,8 +45,9 @@ class PickupTests(unittest.TestCase):
         h.game_focused = Mock(return_value=True)
         h.finish_settings = {key: Mock(get=Mock(return_value=value)) for key, value in {
             'finish_percent': 98, 'wait_seconds': 1.5,
-            'hold_seconds': 3.5, 'click_seconds': .1,
+            'hold_seconds': 3.5,
         }.items()}
+        h.cast_seconds = Mock(get=Mock(return_value=.8))
         self.clock = 10.0
         self.time_patch = patch('app.time.monotonic', side_effect=lambda: self.clock)
         self.detect_patch = patch('app.detect', return_value=None)
@@ -54,29 +66,28 @@ class PickupTests(unittest.TestCase):
             self.step(10+i*.2, 17)
         self.helper.key_t.assert_not_called()
 
-    def test_unreadable_resets_completion_confirmation(self):
+    def test_single_valid_threshold_read_triggers_pickup(self):
         self.step(10, 98)
-        self.step(10.2, None)
-        self.step(10.4, 98)
-        self.assertNotEqual(self.helper.state, 'finish_wait')
+        self.assertEqual(self.helper.state, 'finish_wait')
         self.helper.key_t.assert_not_called()
 
     def test_exact_pickup_sequence_and_single_click(self):
         h = self.helper
         self.step(10, 98)
-        self.step(10.2, 99)
         self.assertEqual(h.state, 'finish_wait')
         h.key_t.assert_not_called()
-        self.step(11.69, None)
+        self.step(11.49, None)
         h.key_t.assert_not_called()
-        self.step(11.7, None)
+        self.step(11.5, None)
         h.key_t.assert_called_once_with(True)
-        self.step(15.19, None)
+        self.step(14.99, None)
         h.key_t.assert_called_once_with(True)
-        self.step(15.2, None)
+        self.step(15.0, None)
         self.assertEqual(h.key_t.call_args.args, (False,))
         self.assertEqual(h.mouse.call_args.args, (True,))
-        self.step(15.31, None)
+        self.step(15.79, None)
+        self.assertEqual(h.mouse.call_args.args, (True,))
+        self.step(15.81, None)
         self.assertEqual(h.mouse.call_args.args, (False,))
         self.assertEqual(sum(c.args == (True,) for c in h.mouse.call_args_list), 1)
 
@@ -85,17 +96,15 @@ class PickupTests(unittest.TestCase):
         h.finish_settings['finish_percent'].get.return_value = 99
         h.finish_settings['wait_seconds'].get.return_value = 2.2
         h.finish_settings['hold_seconds'].get.return_value = 4.6
-        h.finish_settings['click_seconds'].get.return_value = .25
         self.step(10, 98)
         self.assertEqual(h.finish_reads, 0)
         self.step(10.2, 99)
-        self.step(10.4, 99)
-        self.assertAlmostEqual(h.deadline, 12.6)
+        self.assertAlmostEqual(h.deadline, 12.4)
         h.finish_settings['hold_seconds'].get.return_value = 1
-        self.step(12.61, None)
-        self.assertAlmostEqual(h.deadline, 17.21)
-        self.step(17.22, None)
-        self.assertAlmostEqual(h.deadline, 17.47)
+        self.step(12.41, None)
+        self.assertAlmostEqual(h.deadline, 17.01)
+        self.step(17.02, None)
+        self.assertAlmostEqual(h.deadline, 17.82)
 
     def test_scan_code_layout(self):
         self.assertEqual(ctypes.sizeof(Input), 40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28)
@@ -123,7 +132,6 @@ class PickupTests(unittest.TestCase):
         h = self.helper
         h.state = 'finish_pending'
         h.pickup_hold_seconds = 3.5
-        h.pickup_click_seconds = .1
         self.step(10,None)
         with patch('app.user32.GetAsyncKeyState',return_value=0):
             self.step(12,None)
@@ -151,18 +159,68 @@ class PickupTests(unittest.TestCase):
     def test_sequence_rearms_for_next_catch(self):
         h=self.helper
         self.step(10,100)
-        self.step(10.1,100)
         self.assertEqual(h.state,'finish_wait')
-        self.step(11.6,None)
-        self.step(15.1,None)
-        self.step(15.21,None)
-        self.step(15.4,100)
-        self.step(15.6,100)
+        self.step(11.5,None)
+        self.step(15.0,None)
+        self.step(15.81,None)
+        self.step(16.0,100)
         self.assertEqual(h.state,'waiting')
-        self.step(16,20)
+        self.step(16.2,20)
         self.step(17,98)
-        self.step(17.1,99)
         self.assertEqual(h.state,'finish_wait')
+
+
+    def test_1000_catches_hold_and_recast_without_stale_state(self):
+        h=self.helper
+        for cycle in range(1000):
+            t=10+cycle*8
+            self.step(t,20)
+            self.step(t+.1,98)
+            self.assertEqual(h.state,'finish_wait')
+            self.step(t+1.59,None)
+            self.assertEqual(h.state,'finish_wait')
+            self.step(t+1.61,None)
+            self.assertEqual(h.state,'finish')
+            self.step(t+5.12,None)
+            self.assertEqual(h.state,'click')
+            self.step(t+5.94,None)
+            self.assertEqual(h.state,'waiting')
+            self.assertFalse(h.progress_armed)
+            h.mouse.reset_mock()
+            h.key_t.reset_mock()
+        self.assertEqual(h.pickups,1000)
+
+    def test_new_meter_rearms_if_low_percent_was_unreadable(self):
+        h=self.helper
+        h.progress_armed=False
+        h.awaiting_new_bar=True
+        self.step(10,None)
+        self.step(10.5,None)
+        with patch('app.detect',return_value=(100,120)):
+            for t in (10.6,10.7,10.8):
+                self.step(t,None)
+        self.assertTrue(h.progress_armed)
+        self.step(10.9,98)
+        self.assertEqual(h.state,'finish_wait')
+
+    def test_focus_loss_releases_and_resumes_full_hold(self):
+        h=self.helper
+        self.step(10,98)
+        self.step(11.5,None)
+        h.game_focused.return_value=False
+        self.step(12,None)
+        h.key_t.assert_called_with(False)
+        h.mouse.assert_called_with(False)
+        h.game_focused.return_value=True
+        self.step(20,None)
+        self.assertEqual(h.state,'finish_wait')
+        self.assertAlmostEqual(h.deadline,21.5)
+        self.step(21.5,None)
+        self.assertAlmostEqual(h.deadline,25)
+        self.step(24.9,None)
+        self.assertEqual(h.state,'finish')
+        self.step(25,None)
+        self.assertEqual(h.state,'click')
 
 
 if __name__ == '__main__':
