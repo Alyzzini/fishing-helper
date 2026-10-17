@@ -37,6 +37,7 @@ class PickupTests(unittest.TestCase):
         h.finish_settings = {key: Mock(get=Mock(return_value=value)) for key, value in {
             'finish_percent': 98, 'wait_seconds': 1.5,
             'hold_seconds': 3.5, 'click_seconds': .1,
+            'prompt_timeout': 10,
         }.items()}
         self.clock = 10.0
         self.time_patch = patch('app.time.monotonic', side_effect=lambda: self.clock)
@@ -150,7 +151,7 @@ class PickupTests(unittest.TestCase):
         h.mouse.assert_not_called()
         self.assertEqual(h.key_t.call_args.args,(False,))
 
-    def test_collect_triggers_pickup_when_percentage_is_unreadable(self):
+    def test_t_prompt_triggers_pickup_when_percentage_is_unreadable(self):
         h=self.helper
         h.collect_region=(0,0,100,30)
         h.collect_due=0
@@ -167,7 +168,7 @@ class PickupTests(unittest.TestCase):
         self.assertAlmostEqual(h.deadline,11.63)
         h.key_t.assert_not_called()
 
-    def test_collect_cannot_trigger_before_a_fish_was_tracked(self):
+    def test_t_prompt_cannot_trigger_before_a_fish_was_tracked(self):
         h=self.helper
         h.collect_region=(0,0,100,30)
         h.collect_reader=Mock(read=Mock(return_value=True))
@@ -175,6 +176,47 @@ class PickupTests(unittest.TestCase):
         self.step(10.2,None)
         h.collect_reader.read.assert_not_called()
         h.key_t.assert_not_called()
+
+    def prepare_prompt_hold(self):
+        h=self.helper
+        h.collect_region=(0,0,40,40)
+        h.collect_reader=Mock(read=Mock(return_value=True))
+        h.collect_capture=Mock(grab=Mock(return_value=np.zeros((40,40,3),dtype=np.uint8)))
+        h.collect_text=Mock()
+        h.begin_pickup(10,'T prompt confirmed')
+        self.step(11.5,None)
+
+    def test_prompt_disappearance_ends_hold_after_confirmation(self):
+        self.prepare_prompt_hold()
+        h=self.helper
+        h.collect_reader.read.return_value=False
+        self.step(12,None)
+        self.step(12.2,None)
+        self.assertEqual(h.state,'finish')
+        self.step(12.26,None)
+        self.assertEqual(h.state,'click')
+        self.assertEqual(h.key_t.call_args.args,(False,))
+        self.assertEqual(h.mouse.call_args.args,(True,))
+
+    def test_prompt_timeout_stops_without_casting(self):
+        self.prepare_prompt_hold()
+        h=self.helper
+        h.stop=Mock()
+        h.mouse.reset_mock()
+        self.step(21.51,None)
+        h.stop.assert_called_once()
+        h.mouse.assert_not_called()
+
+    def test_brief_prompt_flicker_does_not_finish(self):
+        self.prepare_prompt_hold()
+        h=self.helper
+        h.collect_reader.read.return_value=False
+        self.step(12,None)
+        h.collect_reader.read.return_value=True
+        self.step(12.1,None)
+        self.step(12.4,None)
+        self.assertEqual(h.state,'finish')
+        h.key_t.assert_called_once_with(True)
 
 
 if __name__ == '__main__':

@@ -53,7 +53,7 @@ Open **Customize finish sequence** to adjust:
 
 Settings save to `settings.json`, which is excluded from version control. Timings are captured at pickup start, so slider changes affect the next pickup. The initial casting hold is configured separately.
 
-Lost tracking or an unreadable percentage alone never counts as completion. A separately selected Collect prompt can confirm pickup after a tracked catch. After pickup, progress must fall below the threshold minus three percentage points to arm pickup again. Losing focus during a T hold releases input and stops the sequence.
+Lost tracking or an unreadable percentage alone never counts as completion. A separately selected T prompt can confirm pickup after a tracked catch. After pickup, progress must fall below the threshold minus three percentage points to arm pickup again. Losing focus during a T hold releases input and stops the sequence.
 
 ## Architecture
 
@@ -116,8 +116,12 @@ Pickup now starts its timer only after Windows reports T as DOWN. If that state 
 A small rotating `pickup.log` records completion triggers, key transitions, confirmation, retries, and focus interruptions. It stays local and is excluded from Git. This helps distinguish a missed percentage trigger from input trouble.
 
 
-### Collect prompt backup
+### Hold until the T prompt disappears
 
-If the finishing percentage disappears before it is recognized, select **Select Collect word (backup)** while an item is waiting to be collected. Drag tightly around only the word **Collect**, excluding the item name, T circle, and surrounding outline. Keep the camera steady; reselect if the prompt moves. This selection is local to the current app session.
+Choose **Select T prompt circle** while a catch is waiting at the rod tip. Draw a square tightly around the entire white circle containing **T**, excluding the item name. A yellow box marks that area. Select the fishing bar as usual, then press F8 for the next catch. Keep the camera steady and reselect if the prompt changes location or size.
 
-On subsequent catches, the backup runs after a fish has been tracked. When the bar is absent and Collect is recognized twice, it starts the same configured wait, verified T hold, and single click. Merely losing the bar never starts pickup. The Collect status shows FOUND or waiting. Percentage-based completion remains available, and either a percentage selection or a Collect selection can be used alongside the fishing bar. Collect recognition is font/template based and depends on a tight crop; it is not a general OCR engine.
+With a T area selected, prompt detection replaces the percentage completion trigger. After a tracked catch, two sightings of the T circle with the fishing bar absent start the configured wait. The helper then verifies T is held and keeps holding until the prompt has been absent for at least 0.25 seconds. It releases T and left-clicks once. Brief detection flickers do not finish pickup.
+
+**Maximum T hold in prompt mode** is a new saved slider (1–30 seconds, default 10). If the prompt remains visible at that limit, the app releases input and stops without casting. This mode uses visual disappearance as its pickup signal; camera movement or occlusion can also hide the prompt, so keep the selected box aligned. F7 remains a separate fixed-duration T test, and F9 stops either mode.
+
+Without a T area, percentage completion and the fixed-duration T hold remain available. The T region is selected anew each app session.
