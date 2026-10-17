@@ -4,6 +4,8 @@ from ctypes import wintypes
 import time
 import json
 import math
+import logging
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
@@ -13,6 +15,8 @@ from capture import RegionCapture
 from control import Tracker
 from progress import PercentageReader
 from keyboard_input import send_t
+
+log = logging.getLogger('fishing_helper')
 
 user32 = ctypes.windll.user32
 user32.GetForegroundWindow.restype = wintypes.HWND
@@ -73,6 +77,12 @@ class App:
         self.root.geometry('450x440+40+80')
         self.root.attributes('-topmost', True)
         self.root.configure(bg='#111827')
+        if not log.handlers:
+            handler = RotatingFileHandler(Path(__file__).with_name('pickup.log'),maxBytes=150000,backupCount=1)
+            handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
+            log.addHandler(handler)
+            log.setLevel(logging.INFO)
+        self.test_hold = False
         self.running = False
         self.held = False
         self.t_held = False
@@ -148,6 +158,7 @@ class App:
         ttk.Label(cast_row, text='Cast click hold (seconds): ').pack(side='left')
         ttk.Spinbox(cast_row, from_=.1, to=5, increment=.1, textvariable=self.cast_seconds, width=5).pack(side='left')
         ttk.Button(self.root,text='Customize finish sequence…',command=self.show_settings).pack(fill='x',padx=22,pady=5)
+        ttk.Button(self.root,text='Test T hold only (F7)',command=self.test_t_hold).pack(fill='x',padx=22,pady=5)
         tk.Label(self.root,textvariable=self.sequence_text,wraplength=400,fg='#93c5fd',bg='#111827').pack(pady=5)
         tk.Label(self.root, text='F9: emergency stop  •  Keep Roblox focused', fg='#94a3b8', bg='#111827').pack(pady=8)
         # Tk fonts scale with Windows DPI; size the window from its actual contents.
@@ -204,10 +215,23 @@ class App:
             user32.mouse_event(0x0002 if down else 0x0004, 0, 0, 0, 0)
             self.held = down
 
-    def key_t(self, down):
-        if down != self.t_held:
+    def key_t(self, down, force=False):
+        if down != self.t_held or force:
             send_t(down)
             self.t_held = down
+            log.info('T %s%s', 'DOWN' if down else 'UP', ' reasserted' if force else '')
+
+    def test_t_hold(self):
+        self.stop()
+        self.test_hold = True
+        self.running = True
+        self.timer_active = ctypes.windll.winmm.timeBeginPeriod(1) == 0
+        self.pickup_hold_seconds = self.finish_settings['hold_seconds'].get()
+        self.state = 'finish_wait'
+        self.deadline = time.monotonic()+2
+        self.label('T TEST — focus Roblox')
+        self.detail.set('Focus Roblox within 2 seconds. This tests T only; no cast click follows.')
+        log.info('Manual T test requested, duration %.2fs', self.pickup_hold_seconds)
 
     def label(self, text, active=False):
         if self.last_label == (text,active):
@@ -222,6 +246,7 @@ class App:
 
     def stop(self):
         self.running = False
+        self.test_hold = False
         if self.timer_active:
             ctypes.windll.winmm.timeEndPeriod(1)
             self.timer_active = False
@@ -349,14 +374,20 @@ class App:
     def tick(self):
         started = time.perf_counter()
         try:
-            for key in (0x77, 0x78):
+            for key in (0x76, 0x77, 0x78):
                 down = bool(user32.GetAsyncKeyState(key) & 0x8000)
                 if down and not self.last_keys.get(key):
-                    self.stop() if key == 0x78 else self.toggle()
+                    if key == 0x78:
+                        self.stop()
+                    elif key == 0x76:
+                        self.test_t_hold()
+                    else:
+                        self.toggle()
                 self.last_keys[key] = down
             if self.running:
                 self.step()
         except Exception as exc:
+            log.exception('Helper stopped after input or capture error')
             self.stop()
             self.detail.set(f'Stopped: {exc}')
         finally:
@@ -367,6 +398,7 @@ class App:
         now = time.monotonic()
         if not self.game_focused():
             if self.state == 'finish':
+                log.info('Pickup interrupted by focus loss')
                 self.stop()
                 self.detail.set('Pickup interrupted: Roblox lost focus while T was held. Stopped before the next click.')
                 return
@@ -400,17 +432,45 @@ class App:
             self.state = 'finish_pending'
         if self.state == 'finish_pending':
             self.key_t(True)
-            self.deadline = time.monotonic() + self.pickup_hold_seconds
+            self.deadline = None
+            self.confirm_deadline = time.monotonic()+.25
+            self.hold_retries = 0
             self.state = 'finish'
             self.label('FINISHED — holding T',True)
             self.detail.set(f'Holding T for {self.pickup_hold_seconds:g} seconds, then clicking once.')
         if self.state == 'finish':
+            observed_down = bool(user32.GetAsyncKeyState(0x54) & 0x8000)
+            if not observed_down:
+                if self.deadline is not None:
+                    log.info('Windows reported T UP during hold; continuous hold timer reset')
+                    self.deadline = None
+                    self.confirm_deadline = now
+                if now >= self.confirm_deadline:
+                    if self.hold_retries >= 2:
+                        self.stop()
+                        self.detail.set('T did not stay DOWN in Windows. Stopped without casting. Try F7 to test T by itself.')
+                        log.info('T hold failed after two retries; no cast sent')
+                        return
+                    self.key_t(True,force=True)
+                    self.hold_retries += 1
+                    self.confirm_deadline = now+.25
+                self.label('VERIFYING T — waiting')
+                self.detail.set('Waiting for Windows to confirm T is DOWN. Hold timer has not started.')
+                return
+            if self.deadline is None:
+                self.deadline = now+self.pickup_hold_seconds
+                log.info('Windows confirmed T DOWN; continuous hold %.2fs',self.pickup_hold_seconds)
+                self.label('T CONFIRMED — holding',True)
             if now >= self.detail_due:
                 self.detail_due = now+.1
-                observed_down = bool(user32.GetAsyncKeyState(0x54) & 0x8000)
                 self.detail.set(f'T held: {max(0,self.deadline-now):.1f}s remaining. Windows key state: {"DOWN" if observed_down else "UP"}.')
             if now >= self.deadline:
                 self.key_t(False)
+                log.info('Verified hold completed')
+                if self.test_hold:
+                    self.stop()
+                    self.detail.set('T test complete: Windows reported DOWN for the full hold. No cast click was sent.')
+                    return
                 self.mouse(True)
                 self.state = 'click'
                 self.deadline = now + self.pickup_click_seconds
@@ -419,7 +479,7 @@ class App:
                 self.progress_value = None
             return
         if now >= self.progress_due and self.progress_region:
-            self.progress_due = now + .12
+            self.progress_due = now + .05
             self.progress_value = self.reader.read(Image.fromarray(self.percent_capture.grab(self.progress_region)))
             self.progress_text.set(f'Progress: {self.progress_value}%' if self.progress_value is not None else 'Progress: unreadable — check % selection')
             threshold = self.finish_settings['finish_percent'].get()
@@ -427,6 +487,7 @@ class App:
                 self.progress_armed = True
             self.finish_reads = self.finish_reads+1 if self.progress_armed and self.progress_value is not None and self.progress_value >= threshold else 0
             if self.finish_reads >= 2:
+                log.info('Completion confirmed at %s%% (threshold %s%%)',self.progress_value,threshold)
                 self.progress_armed = False
                 self.mouse(False)
                 self.state = 'finish_wait'
