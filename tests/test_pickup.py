@@ -13,8 +13,6 @@ class PickupTests(unittest.TestCase):
         h.state = 'tracking'
         h.progress_due = 0
         h.progress_region = (0, 0, 100, 40)
-        h.collect_region = None
-        h.catch_seen = False
         h.region = (0, 0, 80, 500)
         h.progress_armed = True
         h.finish_reads = 0
@@ -37,7 +35,6 @@ class PickupTests(unittest.TestCase):
         h.finish_settings = {key: Mock(get=Mock(return_value=value)) for key, value in {
             'finish_percent': 98, 'wait_seconds': 1.5,
             'hold_seconds': 3.5, 'click_seconds': .1,
-            'prompt_timeout': 10,
         }.items()}
         self.clock = 10.0
         self.time_patch = patch('app.time.monotonic', side_effect=lambda: self.clock)
@@ -151,96 +148,21 @@ class PickupTests(unittest.TestCase):
         h.mouse.assert_not_called()
         self.assertEqual(h.key_t.call_args.args,(False,))
 
-    def test_t_prompt_triggers_pickup_when_percentage_is_unreadable(self):
+    def test_sequence_rearms_for_next_catch(self):
         h=self.helper
-        h.collect_region=(0,0,100,30)
-        h.collect_due=0
-        h.collect_reads=0
-        h.catch_seen=True
-        h.collect_reader=Mock(read=Mock(return_value=True))
-        h.collect_capture=Mock(grab=Mock(return_value=np.zeros((30,100,3),dtype=np.uint8)))
-        h.collect_text=Mock()
-        self.step(10,None)
-        self.assertNotEqual(h.state,'finish_wait')
-        self.step(10.13,None)
+        self.step(10,100)
+        self.step(10.1,100)
         self.assertEqual(h.state,'finish_wait')
-        self.assertFalse(h.catch_seen)
-        self.assertAlmostEqual(h.deadline,11.63)
-        h.key_t.assert_not_called()
-
-    def test_t_prompt_cannot_trigger_before_a_fish_was_tracked(self):
-        h=self.helper
-        h.collect_region=(0,0,100,30)
-        h.collect_reader=Mock(read=Mock(return_value=True))
-        self.step(10,None)
-        self.step(10.2,None)
-        h.collect_reader.read.assert_not_called()
-        h.key_t.assert_not_called()
-
-    def prepare_prompt_hold(self):
-        h=self.helper
-        h.collect_region=(0,0,40,40)
-        h.collect_reader=Mock(read=Mock(return_value=True))
-        h.collect_capture=Mock(grab=Mock(return_value=np.zeros((40,40,3),dtype=np.uint8)))
-        h.collect_text=Mock()
-        h.begin_pickup(10,'T prompt confirmed')
-        self.step(11.5,None)
-
-    def test_prompt_disappearance_ends_hold_after_confirmation(self):
-        self.prepare_prompt_hold()
-        h=self.helper
-        h.collect_reader.read.return_value=False
-        self.step(12,None)
-        self.step(12.2,None)
-        self.assertEqual(h.state,'finish')
-        self.step(12.8,None)
-        self.assertEqual(h.state,'finish')
-        h.key_t.assert_called_once_with(True)
-        self.step(14.99,None)
-        self.assertEqual(h.state,'finish')
-        self.step(15,None)
-        self.assertEqual(h.state,'click')
-        self.assertEqual(h.key_t.call_args.args,(False,))
-        self.assertEqual(h.mouse.call_args.args,(True,))
-
-    def test_prompt_timeout_stops_without_casting(self):
-        self.prepare_prompt_hold()
-        h=self.helper
-        h.stop=Mock()
-        h.mouse.reset_mock()
-        self.step(21.51,None)
-        h.stop.assert_called_once()
-        h.mouse.assert_not_called()
-
-    def test_brief_prompt_flicker_does_not_finish(self):
-        self.prepare_prompt_hold()
-        h=self.helper
-        h.collect_reader.read.return_value=False
-        self.step(12,None)
-        h.collect_reader.read.return_value=True
-        self.step(12.1,None)
-        self.step(12.4,None)
-        self.assertEqual(h.state,'finish')
-        h.key_t.assert_called_once_with(True)
-
-    def test_existing_loot_is_confirmed_before_cast(self):
-        h=self.helper
-        h.state='cast_delay'
-        h.deadline=0
-        h.collect_region=(0,0,60,60)
-        h.collect_capture=Mock()
-        h.collect_capture.grab.return_value=np.zeros((60,60,3),dtype=np.uint8)
-        h.collect_reader=Mock()
-        h.collect_reader.read.return_value=True
-        h.collect_text=Mock()
-        self.step(10,None)
+        self.step(11.6,None)
+        self.step(15.1,None)
+        self.step(15.21,None)
+        self.step(15.4,100)
+        self.step(15.6,100)
         self.assertEqual(h.state,'waiting')
-        h.mouse.assert_not_called()
-        self.step(10.2,None)
-        self.step(10.4,None)
+        self.step(16,20)
+        self.step(17,98)
+        self.step(17.1,99)
         self.assertEqual(h.state,'finish_wait')
-        self.step(12,None)
-        h.key_t.assert_called_with(True)
 
 
 if __name__ == '__main__':
