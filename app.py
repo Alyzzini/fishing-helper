@@ -187,7 +187,7 @@ class App:
     def update_sequence_text(self):
         v = {key:variable.get() for key,variable in self.finish_settings.items()}
         if self.collect_region:
-            self.sequence_text.set(f'T prompt → wait {v["wait_seconds"]:g}s → hold until gone (max {v["prompt_timeout"]:g}s) → click once')
+            self.sequence_text.set(f'T prompt → wait {v["wait_seconds"]:g}s → hold T at least {v["hold_seconds"]:g}s, then confirm gone → click once')
             return
         self.sequence_text.set(f'{v["finish_percent"]:.0f}% → wait {v["wait_seconds"]:g}s → hold T {v["hold_seconds"]:g}s → one {v["click_seconds"]:g}s click')
 
@@ -339,7 +339,7 @@ class App:
                 self.collect_text.set('T prompt: selected')
                 self.draw_progress_overlay(collect=True)
                 self.update_sequence_text()
-                self.detail.set('T prompt mode selected: after a catch, hold T until its circle disappears.')
+                self.detail.set('T prompt mode selected: after a catch, hold T for the full configured duration before confirming its circle is gone.')
             elif progress and self.progress_region:
                 self.progress_text.set('Progress area selected. Waiting to read %.')
                 self.draw_progress_overlay()
@@ -518,7 +518,9 @@ class App:
                 elif self.prompt_missing_since is None:
                     self.prompt_missing_since = now
             if prompt_mode:
-                prompt_finished = self.prompt_missing_since is not None and now-self.prompt_missing_since >= .25
+                minimum_end = self.deadline-self.pickup_hold_seconds+self.pickup_min_hold_seconds
+                prompt_finished = (now >= minimum_end and self.prompt_missing_since is not None
+                                   and now-self.prompt_missing_since >= .75)
                 if now >= self.deadline and not prompt_finished:
                     self.stop()
                     self.detail.set('Maximum T hold reached while prompt remained. Stopped without casting; check the T box.')
@@ -527,7 +529,7 @@ class App:
             if now >= self.detail_due:
                 self.detail_due = now+.1
                 if prompt_mode:
-                    self.detail.set(f'Holding T until its prompt disappears. Maximum time left: {max(0,self.deadline-now):.1f}s. Windows: DOWN.')
+                    self.detail.set(f'Holding T (minimum {self.pickup_min_hold_seconds:g}s), then confirming prompt gone. Maximum time left: {max(0,self.deadline-now):.1f}s. Windows: DOWN.')
                 else:
                     self.detail.set(f'T held: {max(0,self.deadline-now):.1f}s remaining. Windows key state: {"DOWN" if observed_down else "UP"}.')
             if prompt_finished or (not prompt_mode and now >= self.deadline):
@@ -605,14 +607,15 @@ class App:
         self.pickup_hold_seconds = self.finish_settings['hold_seconds'].get()
         self.pickup_prompt_mode = bool(self.collect_region)
         if self.pickup_prompt_mode:
-            self.pickup_hold_seconds = self.finish_settings['prompt_timeout'].get()
+            self.pickup_min_hold_seconds = self.pickup_hold_seconds
+            self.pickup_hold_seconds = max(self.finish_settings['prompt_timeout'].get(), self.pickup_min_hold_seconds+1)
         self.prompt_missing_since = None
         self.prompt_check_due = 0
         self.pickup_click_seconds = self.finish_settings['click_seconds'].get()
         self.deadline = now+wait_seconds
         self.tracking_lines(None)
         self.label('FINISHED — waiting',True)
-        ending = 'until its prompt disappears' if self.pickup_prompt_mode else f'for {self.pickup_hold_seconds:g}s'
+        ending = f'for at least {self.pickup_min_hold_seconds:g}s, then until its prompt stays gone' if self.pickup_prompt_mode else f'for {self.pickup_hold_seconds:g}s'
         self.detail.set(f'{reason}. Waiting {wait_seconds:g}s before holding T {ending}.')
 
     def close(self):

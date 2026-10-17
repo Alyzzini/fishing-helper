@@ -125,3 +125,5 @@ With a T area selected, prompt detection replaces the percentage completion trig
 **Maximum T hold in prompt mode** is a new saved slider (1–30 seconds, default 10). If the prompt remains visible at that limit, the app releases input and stops without casting. This mode uses visual disappearance as its pickup signal; camera movement or occlusion can also hide the prompt, so keep the selected box aligned. F7 remains a separate fixed-duration T test, and F9 stops either mode.
 
 Without a T area, percentage completion and the fixed-duration T hold remain available. The T region is selected anew each app session.
+
+Pickup tracking tolerates rod movement: T stays down for at least the configured hold duration (default 3.5 seconds). Only after that minimum and 0.75 seconds of prompt absence will it release and cast. Keep the T selection large enough to contain the swinging prompt. F9 and focus loss still release inputs immediately.
