@@ -13,6 +13,8 @@ class PickupTests(unittest.TestCase):
         h.state = 'tracking'
         h.progress_due = 0
         h.progress_region = (0, 0, 100, 40)
+        h.collect_region = None
+        h.catch_seen = False
         h.region = (0, 0, 80, 500)
         h.progress_armed = True
         h.finish_reads = 0
@@ -147,6 +149,32 @@ class PickupTests(unittest.TestCase):
         h.stop.assert_called_once()
         h.mouse.assert_not_called()
         self.assertEqual(h.key_t.call_args.args,(False,))
+
+    def test_collect_triggers_pickup_when_percentage_is_unreadable(self):
+        h=self.helper
+        h.collect_region=(0,0,100,30)
+        h.collect_due=0
+        h.collect_reads=0
+        h.catch_seen=True
+        h.collect_reader=Mock(read=Mock(return_value=True))
+        h.collect_capture=Mock(grab=Mock(return_value=np.zeros((30,100,3),dtype=np.uint8)))
+        h.collect_text=Mock()
+        self.step(10,None)
+        self.assertNotEqual(h.state,'finish_wait')
+        self.step(10.13,None)
+        self.assertEqual(h.state,'finish_wait')
+        self.assertFalse(h.catch_seen)
+        self.assertAlmostEqual(h.deadline,11.63)
+        h.key_t.assert_not_called()
+
+    def test_collect_cannot_trigger_before_a_fish_was_tracked(self):
+        h=self.helper
+        h.collect_region=(0,0,100,30)
+        h.collect_reader=Mock(read=Mock(return_value=True))
+        self.step(10,None)
+        self.step(10.2,None)
+        h.collect_reader.read.assert_not_called()
+        h.key_t.assert_not_called()
 
 
 if __name__ == '__main__':

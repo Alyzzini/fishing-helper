@@ -15,6 +15,7 @@ from capture import RegionCapture
 from control import Tracker
 from progress import PercentageReader
 from keyboard_input import send_t
+from collect_prompt import CollectReader
 
 log = logging.getLogger('fishing_helper')
 
@@ -88,6 +89,13 @@ class App:
         self.t_held = False
         self.region = None
         self.progress_region = None
+        self.collect_region = None
+        self.collect_reader = CollectReader()
+        self.collect_capture = RegionCapture()
+        self.collect_due = 0
+        self.collect_reads = 0
+        self.catch_seen = False
+        self.collect_text = tk.StringVar(value='Collect backup: not selected')
         self.progress_overlay = None
         self.reader = PercentageReader()
         self.capture = RegionCapture()
@@ -147,6 +155,8 @@ class App:
         ttk.Button(self.root, text='1. Select fishing bar area', command=self.select).pack(fill='x', padx=22, pady=5)
         ttk.Button(self.root, text='2. Select bottom % text', command=lambda: self.select(True)).pack(fill='x', padx=22, pady=5)
         tk.Label(self.root, textvariable=self.progress_text, fg='#fbbf24', bg='#111827').pack()
+        ttk.Button(self.root,text='Select Collect word (backup)',command=lambda:self.select(collect=True)).pack(fill='x',padx=22,pady=5)
+        tk.Label(self.root,textvariable=self.collect_text,fg='#fbbf24',bg='#111827').pack()
         ttk.Button(self.root, text='3. Start / Stop (F8)', command=self.toggle).pack(fill='x', padx=22, pady=5)
         tk.Label(self.root, text='Cyan line = dot   |   Orange line = target', fg='#cbd5e1', bg='#111827').pack()
         tk.Label(self.root, textvariable=self.performance, fg='#93c5fd', bg='#111827').pack()
@@ -258,6 +268,8 @@ class App:
         self.finish_reads = 0
         self.progress_due = 0
         self.progress_armed = True
+        self.catch_seen = False
+        self.collect_reads = 0
         self.tracker.reset()
         self.performance.set('Tracking rate: stopped')
         self.tracking_lines(None)
@@ -266,7 +278,7 @@ class App:
     def toggle(self):
         if self.running:
             self.stop()
-        elif self.region and self.progress_region:
+        elif self.region and (self.progress_region or self.collect_region):
             self.running = True
             self.timer_active = ctypes.windll.winmm.timeBeginPeriod(1) == 0
             self.frames = 0
@@ -275,11 +287,11 @@ class App:
             self.deadline = time.monotonic() + 2
             self.detail.set('Focus Roblox and put your mouse over the game. Starting in 2 seconds.')
         else:
-            self.detail.set('First select both the fishing bar and the bottom percentage text.')
+            self.detail.set('Select the fishing bar, then the percentage text or Collect word backup.')
 
-    def select(self, progress=False):
+    def select(self, progress=False, collect=False):
         self.stop()
-        if not progress and self.overlay:
+        if not progress and not collect and self.overlay:
             self.overlay.destroy()
             self.overlay = None
         self.root.withdraw()
@@ -291,6 +303,8 @@ class App:
         c = tk.Canvas(picker, bg='black', highlightthickness=0)
         c.pack(fill='both', expand=True)
         instruction = 'Drag tightly around ONLY the bottom percentage text, including %. Exclude Exit.' if progress else 'Drag tightly around the ENTIRE vertical fishing bar. Esc cancels.'
+        if collect:
+            instruction = 'Drag tightly around ONLY the word Collect. Exclude the item name, T circle, and outline.'
         c.create_text(30, 35, anchor='nw', text=instruction, fill='white', font=('Segoe UI', 19))
         start = []
         rect = []
@@ -304,14 +318,19 @@ class App:
             if start:
                 x1, x2 = sorted([start[0], e.x_root])
                 y1, y2 = sorted([start[1], e.y_root])
-                if x2-x1 > 15 and y2-y1 > (8 if progress else 70):
-                    if progress:
+                if x2-x1 > 15 and y2-y1 > (6 if collect else 8 if progress else 70):
+                    if collect:
+                        self.collect_region = (x1,y1,x2,y2)
+                    elif progress:
                         self.progress_region = (x1, y1, x2, y2)
                     else:
                         self.region = (x1, y1, x2, y2)
             picker.destroy()
             self.root.deiconify()
-            if progress and self.progress_region:
+            if collect and self.collect_region:
+                self.collect_text.set('Collect backup: selected')
+                self.detail.set('Collect backup selected. It activates after tracking a fish and seeing Collect twice.')
+            elif progress and self.progress_region:
                 self.progress_text.set('Progress area selected. Waiting to read %.')
                 self.draw_progress_overlay()
             elif self.region:
@@ -488,18 +507,17 @@ class App:
             self.finish_reads = self.finish_reads+1 if self.progress_armed and self.progress_value is not None and self.progress_value >= threshold else 0
             if self.finish_reads >= 2:
                 log.info('Completion confirmed at %s%% (threshold %s%%)',self.progress_value,threshold)
-                self.progress_armed = False
-                self.mouse(False)
-                self.state = 'finish_wait'
-                wait_seconds = self.finish_settings['wait_seconds'].get()
-                self.pickup_hold_seconds = self.finish_settings['hold_seconds'].get()
-                self.pickup_click_seconds = self.finish_settings['click_seconds'].get()
-                self.deadline = now+wait_seconds
-                self.tracking_lines(None)
-                self.label('FINISHED — waiting',True)
-                self.detail.set(f'{self.progress_value}% confirmed. Waiting {wait_seconds:g}s before holding T for {self.pickup_hold_seconds:g}s.')
+                self.begin_pickup(now,f'{self.progress_value}% confirmed')
                 return
         result = detect(self.capture.grab(self.region))
+        if self.collect_region and self.catch_seen and now >= self.collect_due:
+            self.collect_due = now+.12
+            found = self.collect_reader.read(Image.fromarray(self.collect_capture.grab(self.collect_region)))
+            self.collect_text.set('Collect backup: FOUND' if found else 'Collect backup: waiting for word')
+            self.collect_reads = self.collect_reads+1 if found and result is None else 0
+            if self.collect_reads >= 2:
+                self.begin_pickup(now,'Collect prompt confirmed')
+                return
         observed = time.monotonic()
         self.frames += 1
         if observed-self.fps_started >= 1:
@@ -511,6 +529,7 @@ class App:
             self.seen += 1
             self.lost = None
             if self.seen >= 3:
+                self.catch_seen = True
                 self.state = 'tracking'
                 self.label('FISH ON — tracking', True)
                 target, dot = result
@@ -528,6 +547,21 @@ class App:
             self.detail.set('Mouse released: no fishing bar detected. Select tightly around the visible bar, not the water.')
             # Losing visual tracking never means the catch is complete.
 
+    def begin_pickup(self,now,reason):
+        log.info('Pickup trigger: %s',reason)
+        self.progress_armed = False
+        self.catch_seen = False
+        self.collect_reads = 0
+        self.mouse(False)
+        self.state = 'finish_wait'
+        wait_seconds = self.finish_settings['wait_seconds'].get()
+        self.pickup_hold_seconds = self.finish_settings['hold_seconds'].get()
+        self.pickup_click_seconds = self.finish_settings['click_seconds'].get()
+        self.deadline = now+wait_seconds
+        self.tracking_lines(None)
+        self.label('FINISHED — waiting',True)
+        self.detail.set(f'{reason}. Waiting {wait_seconds:g}s before holding T for {self.pickup_hold_seconds:g}s.')
+
     def close(self):
         self.stop()
         if self.save_job:
@@ -535,6 +569,7 @@ class App:
             self.save_settings()
         self.capture.close()
         self.percent_capture.close()
+        self.collect_capture.close()
         self.root.destroy()
 
 
