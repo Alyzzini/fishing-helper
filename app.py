@@ -52,12 +52,14 @@ def detect(image):
         width = right-left+1
         if not .65 <= width/(band[-1]-band[0]+1) <= 4:
             continue
-        # The bar is dark in shade and blue in bright light; water is cyan.
+        # The translucent bar also becomes warm gray against sand/wood.
+        # Keep bright scenery and saturated cyan water out of this check.
         mid = a[:, left+int(width*.28):left+max(int(width*.72), 1)]
         if mid.size == 0:
             continue
         mr, mg, mb = mid[:,:,0], mid[:,:,1], mid[:,:,2]
-        bar_background = (mid.max(axis=2) < 150) | ((mb > 50) & (mg < mb*.90) & (mr < mb*.75))
+        neutral_bar = (mid.max(axis=2) < 210) & (np.ptp(mid, axis=2) < 45)
+        bar_background = (mid.max(axis=2) < 150) | neutral_bar | ((mb > 50) & (mg < mb*.90) & (mr < mb*.75))
         if bar_background.mean() < .40:
             continue
         white = (mid.min(axis=2) > 175) & (np.ptp(mid, axis=2) < 55)
