@@ -53,7 +53,7 @@ Open **Customize finish sequence** to adjust:
 
 Settings save to `settings.json`, which is excluded from version control. Timings are captured at pickup start, so slider changes affect the next pickup. The initial casting hold is configured separately.
 
-Lost tracking or an unreadable percentage alone never counts as completion. A separately selected T prompt can confirm pickup after a tracked catch. After pickup, progress must fall below the threshold minus three percentage points to arm pickup again. Losing focus during a T hold releases input and stops the sequence.
+Lost tracking or an unreadable percentage alone never counts as completion. After pickup, progress must fall below the threshold minus three percentage points to arm pickup again. Losing focus during a T hold releases input and stops the sequence.
 
 ## Architecture
 
@@ -116,14 +116,6 @@ Pickup now starts its timer only after Windows reports T as DOWN. If that state 
 A small rotating `pickup.log` records completion triggers, key transitions, confirmation, retries, and focus interruptions. It stays local and is excluded from Git. This helps distinguish a missed percentage trigger from input trouble.
 
 
-### Hold until the T prompt disappears
+### Pickup sequence
 
-Choose **Select T prompt circle** while a catch is waiting at the rod tip. Draw a square tightly around the entire white circle containing **T**, excluding the item name. A yellow box marks that area. Select the fishing bar as usual, then press F8 for the next catch. Keep the camera steady and reselect if the prompt changes location or size.
-
-With a T area selected, prompt detection replaces the percentage completion trigger. After a tracked catch, two sightings of the T circle with the fishing bar absent start the configured wait. The helper then verifies T is held and keeps holding until the prompt has been absent for at least 0.25 seconds. It releases T and left-clicks once. Brief detection flickers do not finish pickup.
-
-**Maximum T hold in prompt mode** is a new saved slider (1–30 seconds, default 10). If the prompt remains visible at that limit, the app releases input and stops without casting. This mode uses visual disappearance as its pickup signal; camera movement or occlusion can also hide the prompt, so keep the selected box aligned. F7 remains a separate fixed-duration T test, and F9 stops either mode.
-
-Without a T area, percentage completion and the fixed-duration T hold remain available. The T region is selected anew each app session.
-
-Pickup tracking tolerates rod movement: T stays down for at least the configured hold duration (default 3.5 seconds). Only after that minimum and 0.75 seconds of prompt absence will it release and cast. Keep the T selection large enough to contain the swinging prompt. F9 and focus loss still release inputs immediately.
+Cast, track the fishing minigame, confirm 98% or higher, wait 1.5 seconds, hold T continuously for 3.5 seconds, release T, and click once to cast again. Select the fishing bar and bottom percentage text before F8. There is no T prompt detector.

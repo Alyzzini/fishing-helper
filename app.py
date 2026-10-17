@@ -15,7 +15,6 @@ from capture import RegionCapture
 from control import Tracker
 from progress import PercentageReader
 from keyboard_input import send_t
-from pickup_prompt import TPromptReader
 
 log = logging.getLogger('fishing_helper')
 
@@ -91,14 +90,6 @@ class App:
         self.t_held = False
         self.region = None
         self.progress_region = None
-        self.collect_region = None
-        self.collect_reader = TPromptReader()
-        self.collect_overlay = None
-        self.collect_capture = RegionCapture()
-        self.collect_due = 0
-        self.collect_reads = 0
-        self.catch_seen = False
-        self.collect_text = tk.StringVar(value='T prompt: not selected')
         self.progress_overlay = None
         self.reader = PercentageReader()
         self.capture = RegionCapture()
@@ -131,7 +122,6 @@ class App:
             'wait_seconds': ('Wait before T (seconds)', 0, 10, .1, 1.5),
             'hold_seconds': ('Hold T (seconds)', .1, 10, .1, 3.5),
             'click_seconds': ('Final single click duration (seconds)', .05, 2, .05, .1),
-            'prompt_timeout': ('Maximum T hold in prompt mode (seconds)', 1, 30, .5, 10),
         }
         try:
             saved = json.loads(self.settings_path.read_text())
@@ -159,8 +149,6 @@ class App:
         ttk.Button(self.root, text='1. Select fishing bar area', command=self.select).pack(fill='x', padx=22, pady=5)
         ttk.Button(self.root, text='2. Select bottom % text', command=lambda: self.select(True)).pack(fill='x', padx=22, pady=5)
         tk.Label(self.root, textvariable=self.progress_text, fg='#fbbf24', bg='#111827').pack()
-        ttk.Button(self.root,text='Select T prompt circle',command=lambda:self.select(collect=True)).pack(fill='x',padx=22,pady=5)
-        tk.Label(self.root,textvariable=self.collect_text,fg='#fbbf24',bg='#111827').pack()
         ttk.Button(self.root, text='3. Start / Stop (F8)', command=self.toggle).pack(fill='x', padx=22, pady=5)
         tk.Label(self.root, text='Cyan line = dot   |   Orange line = target', fg='#cbd5e1', bg='#111827').pack()
         tk.Label(self.root, textvariable=self.performance, fg='#93c5fd', bg='#111827').pack()
@@ -186,9 +174,6 @@ class App:
 
     def update_sequence_text(self):
         v = {key:variable.get() for key,variable in self.finish_settings.items()}
-        if self.collect_region:
-            self.sequence_text.set(f'T prompt → wait {v["wait_seconds"]:g}s → hold T at least {v["hold_seconds"]:g}s, then confirm gone → click once')
-            return
         self.sequence_text.set(f'{v["finish_percent"]:.0f}% → wait {v["wait_seconds"]:g}s → hold T {v["hold_seconds"]:g}s → one {v["click_seconds"]:g}s click')
 
     def settings_changed(self,*args):
@@ -241,7 +226,6 @@ class App:
     def test_t_hold(self):
         self.stop()
         self.test_hold = True
-        self.pickup_prompt_mode = False
         self.running = True
         self.timer_active = ctypes.windll.winmm.timeBeginPeriod(1) == 0
         self.pickup_hold_seconds = self.finish_settings['hold_seconds'].get()
@@ -276,8 +260,6 @@ class App:
         self.finish_reads = 0
         self.progress_due = 0
         self.progress_armed = True
-        self.catch_seen = False
-        self.collect_reads = 0
         self.tracker.reset()
         self.performance.set('Tracking rate: stopped')
         self.tracking_lines(None)
@@ -286,7 +268,7 @@ class App:
     def toggle(self):
         if self.running:
             self.stop()
-        elif self.region and (self.progress_region or self.collect_region):
+        elif self.region and self.progress_region:
             self.running = True
             self.timer_active = ctypes.windll.winmm.timeBeginPeriod(1) == 0
             self.frames = 0
@@ -295,11 +277,11 @@ class App:
             self.deadline = time.monotonic() + 2
             self.detail.set('Focus Roblox and put your mouse over the game. Starting in 2 seconds.')
         else:
-            self.detail.set('Select the fishing bar, then the percentage text or T prompt circle.')
+            self.detail.set('Select the fishing bar, then the percentage text.')
 
-    def select(self, progress=False, collect=False):
+    def select(self, progress=False):
         self.stop()
-        if not progress and not collect and self.overlay:
+        if not progress and self.overlay:
             self.overlay.destroy()
             self.overlay = None
         self.root.withdraw()
@@ -311,8 +293,6 @@ class App:
         c = tk.Canvas(picker, bg='black', highlightthickness=0)
         c.pack(fill='both', expand=True)
         instruction = 'Drag tightly around ONLY the bottom percentage text, including %. Exclude Exit.' if progress else 'Drag tightly around the ENTIRE vertical fishing bar. Esc cancels.'
-        if collect:
-            instruction = 'Drag a square tightly around the WHITE CIRCLE containing T. Exclude the item name.'
         c.create_text(30, 35, anchor='nw', text=instruction, fill='white', font=('Segoe UI', 19))
         start = []
         rect = []
@@ -326,21 +306,14 @@ class App:
             if start:
                 x1, x2 = sorted([start[0], e.x_root])
                 y1, y2 = sorted([start[1], e.y_root])
-                if x2-x1 > 15 and y2-y1 > (6 if collect else 8 if progress else 70):
-                    if collect:
-                        self.collect_region = (x1,y1,x2,y2)
-                    elif progress:
+                if x2-x1 > 15 and y2-y1 > (8 if progress else 70):
+                    if progress:
                         self.progress_region = (x1, y1, x2, y2)
                     else:
                         self.region = (x1, y1, x2, y2)
             picker.destroy()
             self.root.deiconify()
-            if collect and self.collect_region:
-                self.collect_text.set('T prompt: selected')
-                self.draw_progress_overlay(collect=True)
-                self.update_sequence_text()
-                self.detail.set('T prompt mode selected: after a catch, hold T for the full configured duration before confirming its circle is gone.')
-            elif progress and self.progress_region:
+            if progress and self.progress_region:
                 self.progress_text.set('Progress area selected. Waiting to read %.')
                 self.draw_progress_overlay()
             elif self.region:
@@ -371,16 +344,13 @@ class App:
         user32.SetWindowLongW(hwnd, -20, style | 0x80000 | 0x20 | 0x08000000)
         user32.SetWindowDisplayAffinity(hwnd, 0x11)
 
-    def draw_progress_overlay(self,collect=False):
-        existing = self.collect_overlay if collect else self.progress_overlay
+    def draw_progress_overlay(self):
+        existing = self.progress_overlay
         if existing:
             existing.destroy()
-        x1,y1,x2,y2 = self.collect_region if collect else self.progress_region
+        x1,y1,x2,y2 = self.progress_region
         win = tk.Toplevel(self.root)
-        if collect:
-            self.collect_overlay = win
-        else:
-            self.progress_overlay = win
+        self.progress_overlay = win
         win.overrideredirect(True)
         win.geometry(f'{x2-x1+8}x{y2-y1+8}+{x1-4}+{y1-4}')
         win.attributes('-topmost',True)
@@ -447,14 +417,6 @@ class App:
                 if detect(self.capture.grab(self.region)) is not None:
                     self.state = 'waiting'
                     return
-                # Resume with loot already on the rod without casting over it.
-                if self.collect_region and self.collect_reader.read(Image.fromarray(self.collect_capture.grab(self.collect_region))):
-                    self.catch_seen = True
-                    self.collect_reads = 0
-                    self.collect_due = 0
-                    self.state = 'waiting'
-                    self.detail.set('T prompt found before casting. Confirming collection.')
-                    return
                 self.mouse(True)
                 self.deadline = now + max(.1, min(5, self.cast_seconds.get()))
                 self.state = 'click'
@@ -473,10 +435,6 @@ class App:
                 return
             self.state = 'finish_pending'
         if self.state == 'finish_pending':
-            if getattr(self,'pickup_prompt_mode',False) and not self.collect_reader.read(Image.fromarray(self.collect_capture.grab(self.collect_region))):
-                self.stop()
-                self.detail.set('T prompt moved or disappeared before holding. Reselect its circle; no cast sent.')
-                return
             self.key_t(True)
             self.deadline = None
             self.confirm_deadline = time.monotonic()+.25
@@ -507,32 +465,10 @@ class App:
                 self.deadline = now+self.pickup_hold_seconds
                 log.info('Windows confirmed T DOWN; continuous hold %.2fs',self.pickup_hold_seconds)
                 self.label('T CONFIRMED — holding',True)
-            prompt_mode = getattr(self,'pickup_prompt_mode',False)
-            prompt_finished = False
-            if prompt_mode and now >= self.prompt_check_due:
-                self.prompt_check_due = now+.05
-                visible = self.collect_reader.read(Image.fromarray(self.collect_capture.grab(self.collect_region)))
-                self.collect_text.set('T prompt: visible — holding' if visible else 'T prompt: gone — confirming')
-                if visible:
-                    self.prompt_missing_since = None
-                elif self.prompt_missing_since is None:
-                    self.prompt_missing_since = now
-            if prompt_mode:
-                minimum_end = self.deadline-self.pickup_hold_seconds+self.pickup_min_hold_seconds
-                prompt_finished = (now >= minimum_end and self.prompt_missing_since is not None
-                                   and now-self.prompt_missing_since >= .75)
-                if now >= self.deadline and not prompt_finished:
-                    self.stop()
-                    self.detail.set('Maximum T hold reached while prompt remained. Stopped without casting; check the T box.')
-                    log.info('T prompt hold timed out; no cast sent')
-                    return
             if now >= self.detail_due:
                 self.detail_due = now+.1
-                if prompt_mode:
-                    self.detail.set(f'Holding T (minimum {self.pickup_min_hold_seconds:g}s), then confirming prompt gone. Maximum time left: {max(0,self.deadline-now):.1f}s. Windows: DOWN.')
-                else:
-                    self.detail.set(f'T held: {max(0,self.deadline-now):.1f}s remaining. Windows key state: {"DOWN" if observed_down else "UP"}.')
-            if prompt_finished or (not prompt_mode and now >= self.deadline):
+                self.detail.set(f'T held: {max(0,self.deadline-now):.1f}s remaining. Windows key state: DOWN.')
+            if now >= self.deadline:
                 self.key_t(False)
                 log.info('Verified hold completed')
                 if self.test_hold:
@@ -554,19 +490,11 @@ class App:
             if self.progress_value is not None and self.progress_value < threshold-3:
                 self.progress_armed = True
             self.finish_reads = self.finish_reads+1 if self.progress_armed and self.progress_value is not None and self.progress_value >= threshold else 0
-            if self.finish_reads >= 2 and not self.collect_region:
+            if self.finish_reads >= 2:
                 log.info('Completion confirmed at %s%% (threshold %s%%)',self.progress_value,threshold)
                 self.begin_pickup(now,f'{self.progress_value}% confirmed')
                 return
         result = detect(self.capture.grab(self.region))
-        if self.collect_region and self.catch_seen and now >= self.collect_due:
-            self.collect_due = now+.12
-            found = self.collect_reader.read(Image.fromarray(self.collect_capture.grab(self.collect_region)))
-            self.collect_text.set('T prompt: FOUND' if found else 'T prompt: waiting for circle')
-            self.collect_reads = self.collect_reads+1 if found and result is None else 0
-            if self.collect_reads >= 2:
-                self.begin_pickup(now,'T prompt confirmed')
-                return
         observed = time.monotonic()
         self.frames += 1
         if observed-self.fps_started >= 1:
@@ -578,7 +506,6 @@ class App:
             self.seen += 1
             self.lost = None
             if self.seen >= 3:
-                self.catch_seen = True
                 self.state = 'tracking'
                 self.label('FISH ON — tracking', True)
                 target, dot = result
@@ -599,23 +526,15 @@ class App:
     def begin_pickup(self,now,reason):
         log.info('Pickup trigger: %s',reason)
         self.progress_armed = False
-        self.catch_seen = False
-        self.collect_reads = 0
         self.mouse(False)
         self.state = 'finish_wait'
         wait_seconds = self.finish_settings['wait_seconds'].get()
         self.pickup_hold_seconds = self.finish_settings['hold_seconds'].get()
-        self.pickup_prompt_mode = bool(self.collect_region)
-        if self.pickup_prompt_mode:
-            self.pickup_min_hold_seconds = self.pickup_hold_seconds
-            self.pickup_hold_seconds = max(self.finish_settings['prompt_timeout'].get(), self.pickup_min_hold_seconds+1)
-        self.prompt_missing_since = None
-        self.prompt_check_due = 0
         self.pickup_click_seconds = self.finish_settings['click_seconds'].get()
         self.deadline = now+wait_seconds
         self.tracking_lines(None)
         self.label('FINISHED — waiting',True)
-        ending = f'for at least {self.pickup_min_hold_seconds:g}s, then until its prompt stays gone' if self.pickup_prompt_mode else f'for {self.pickup_hold_seconds:g}s'
+        ending = f'for {self.pickup_hold_seconds:g}s'
         self.detail.set(f'{reason}. Waiting {wait_seconds:g}s before holding T {ending}.')
 
     def close(self):
@@ -625,7 +544,6 @@ class App:
             self.save_settings()
         self.capture.close()
         self.percent_capture.close()
-        self.collect_capture.close()
         self.root.destroy()
 
 
