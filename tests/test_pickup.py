@@ -21,6 +21,7 @@ class PickupTests(unittest.TestCase):
         h.fps_started = 10
         h.seen = 0
         h.held = False
+        h.test_hold = False
         h.tracker = Mock()
         h.reader = Mock()
         h.capture = Mock()
@@ -38,7 +39,7 @@ class PickupTests(unittest.TestCase):
         self.clock = 10.0
         self.time_patch = patch('app.time.monotonic', side_effect=lambda: self.clock)
         self.detect_patch = patch('app.detect', return_value=None)
-        self.key_patch = patch('app.user32.GetAsyncKeyState', return_value=0)
+        self.key_patch = patch('app.user32.GetAsyncKeyState', return_value=0x8000)
         for p in (self.time_patch, self.detect_patch, self.key_patch):
             p.start()
             self.addCleanup(p.stop)
@@ -101,6 +102,51 @@ class PickupTests(unittest.TestCase):
         self.assertEqual(t_event(True).data.ki.wScan, 0x14)
         self.assertEqual(t_event(True).data.ki.dwFlags, 8)
         self.assertEqual(t_event(False).data.ki.dwFlags, 10)
+
+    def test_unconfirmed_key_never_counts_as_hold_or_clicks(self):
+        h = self.helper
+        h.state = 'finish_pending'
+        h.pickup_hold_seconds = 3.5
+        h.stop = Mock()
+        with patch('app.user32.GetAsyncKeyState',return_value=0):
+            self.step(10,None)
+            self.assertIsNone(h.deadline)
+            self.step(10.26,None)
+            self.step(10.52,None)
+            self.step(10.78,None)
+        self.assertEqual(h.key_t.call_count,3)
+        h.key_t.assert_called_with(True,force=True)
+        h.stop.assert_called_once()
+        h.mouse.assert_not_called()
+
+    def test_interrupted_hold_requires_full_duration_after_recovery(self):
+        h = self.helper
+        h.state = 'finish_pending'
+        h.pickup_hold_seconds = 3.5
+        h.pickup_click_seconds = .1
+        self.step(10,None)
+        with patch('app.user32.GetAsyncKeyState',return_value=0):
+            self.step(12,None)
+        self.assertIsNone(h.deadline)
+        h.key_t.assert_called_with(True,force=True)
+        self.step(12.1,None)
+        self.assertAlmostEqual(h.deadline,15.6)
+        self.step(13.5,None)
+        h.mouse.assert_not_called()
+        self.step(15.61,None)
+        h.mouse.assert_called_once_with(True)
+
+    def test_manual_test_does_not_cast(self):
+        h = self.helper
+        h.state = 'finish_pending'
+        h.pickup_hold_seconds = 1
+        h.test_hold = True
+        h.stop = Mock()
+        self.step(10,None)
+        self.step(11.01,None)
+        h.stop.assert_called_once()
+        h.mouse.assert_not_called()
+        self.assertEqual(h.key_t.call_args.args,(False,))
 
 
 if __name__ == '__main__':

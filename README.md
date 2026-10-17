@@ -77,7 +77,7 @@ flowchart LR
 | `keyboard_input.py` | Windows scan-code key transitions |
 | `tests/` | Detection, control, percentage, and pickup regression tests |
 
-The tracking loop targets 60 updates per second. Percentage recognition runs on a separate 120 ms schedule within the same event loop. Status text updates less frequently than mouse control and tracking lines.
+The tracking loop targets 60 updates per second. Percentage recognition runs on a separate 50 ms schedule within the same event loop. Status text updates less frequently than mouse control and tracking lines.
 
 ## Performance work
 
@@ -105,3 +105,12 @@ The suite covers target colors, bottom-edge dot detection, empty-water rejection
 ## Development notes
 
 Created through an **AI-assisted development workflow**, with hands-on gameplay testing and iterative feedback. Engineering lessons included reducing capture latency, diagnosing detection through overlays, separating lost tracking from completion, and making input timing observable and configurable.
+
+
+### Diagnosing pickup (F7)
+
+Press **F7** or **Test T hold only**, then focus Roblox within two seconds. This holds T for your configured duration without sending a casting click. **F9** still stops it. No screen regions need to be selected for this test.
+
+Pickup now starts its timer only after Windows reports T as DOWN. If that state is lost, the app reasserts key-down without sending a key-up, resets the continuous hold timer, and allows at most two retries. If Windows never confirms the hold, pickup stops without casting. Focus loss also stops pickup. The display distinguishes waiting for confirmation from a confirmed hold; a confirmed Windows hold still needs validation against the game's behavior.
+
+A small rotating `pickup.log` records completion triggers, key transitions, confirmation, retries, and focus interruptions. It stays local and is excluded from Git. This helps distinguish a missed percentage trigger from input trouble.
