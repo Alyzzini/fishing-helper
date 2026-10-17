@@ -53,7 +53,7 @@ Open **Customize finish sequence** to adjust:
 
 Settings save to `settings.json`, which is excluded from version control. Timings are captured at pickup start, so slider changes affect the next pickup. The initial casting hold is configured separately.
 
-Lost tracking or an unreadable percentage never counts as completion. After pickup, progress must fall below the threshold minus three percentage points to arm pickup again. Losing focus during a T hold releases input and stops the sequence.
+Lost tracking or an unreadable percentage alone never counts as completion. A separately selected Collect prompt can confirm pickup after a tracked catch. After pickup, progress must fall below the threshold minus three percentage points to arm pickup again. Losing focus during a T hold releases input and stops the sequence.
 
 ## Architecture
 
@@ -114,3 +114,10 @@ Press **F7** or **Test T hold only**, then focus Roblox within two seconds. This
 Pickup now starts its timer only after Windows reports T as DOWN. If that state is lost, the app reasserts key-down without sending a key-up, resets the continuous hold timer, and allows at most two retries. If Windows never confirms the hold, pickup stops without casting. Focus loss also stops pickup. The display distinguishes waiting for confirmation from a confirmed hold; a confirmed Windows hold still needs validation against the game's behavior.
 
 A small rotating `pickup.log` records completion triggers, key transitions, confirmation, retries, and focus interruptions. It stays local and is excluded from Git. This helps distinguish a missed percentage trigger from input trouble.
+
+
+### Collect prompt backup
+
+If the finishing percentage disappears before it is recognized, select **Select Collect word (backup)** while an item is waiting to be collected. Drag tightly around only the word **Collect**, excluding the item name, T circle, and surrounding outline. Keep the camera steady; reselect if the prompt moves. This selection is local to the current app session.
+
+On subsequent catches, the backup runs after a fish has been tracked. When the bar is absent and Collect is recognized twice, it starts the same configured wait, verified T hold, and single click. Merely losing the bar never starts pickup. The Collect status shows FOUND or waiting. Percentage-based completion remains available, and either a percentage selection or a Collect selection can be used alongside the fishing bar. Collect recognition is font/template based and depends on a tight crop; it is not a general OCR engine.
