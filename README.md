@@ -1,6 +1,6 @@
 # Fishing Helper
 
-A Windows desktop tool for a fishing minigame, built with Python, Tkinter, NumPy, Pillow, and the Windows API. It combines region-based computer vision, predictive mouse control, local percentage recognition, and a timed collection sequence.
+A Windows desktop application that uses computer vision to automate a Roblox fishing minigame. It reads selected screen regions, tracks a moving target, and sends timed mouse and keyboard input. Built with **Python, Tkinter, NumPy, Pillow, and the Windows API**.
 
 ## How it works
 
@@ -15,7 +15,7 @@ The default sequence starts collection at **98%**, waits **1.5 seconds**, and ho
 - Predictive mouse control with cyan dot and orange target overlays.
 - Percentage recognition using local font templates, including touching glyphs.
 - A target loop rate of 60 Hz; actual tracking FPS is shown in the app.
-- Verified Windows key-down timing, bounded input retries, and full-hold restart after a focus interruption.
+- Windows key-state checks, bounded input retries, and full-hold restart after a focus interruption.
 - Automatic pickup re-arming when a new fishing meter is confirmed, even if early percentages were unreadable.
 - One running instance, bounded rotating logs, reusable capture buffers, and one retry after a capture-surface failure.
 - Saved pickup and cast timings; F7 input test and F9 stop.
@@ -62,12 +62,12 @@ This is screen-based automation. OCR can miss or misread a frame, and Windows in
 
 | File | Responsibility |
 | --- | --- |
-| `app.py` | Session state machine, UI, overlays, and input scheduling |
-| `capture.py` | Reusable GDI region captures and bounded recovery |
-| `control.py` | Predictive tracking and hysteresis |
-| `progress.py` | Percentage segmentation and template recognition |
-| `keyboard_input.py` | Physical scan-code input through SendInput |
-| `tests/` | Detection, timing, repeated-cycle, focus, and recovery regressions |
+| [app.py](app.py) | Session state machine, UI, overlays, and input scheduling |
+| [capture.py](capture.py) | Reusable GDI region captures and bounded recovery |
+| [control.py](control.py) | Predictive tracking and hysteresis |
+| [progress.py](progress.py) | Percentage segmentation and template recognition |
+| [keyboard_input.py](keyboard_input.py) | Physical scan-code input through SendInput |
+| [tests/](tests/) | Detection, timing, repeated-cycle, focus, and recovery regressions |
 
 Pickup timings are snapshotted when a catch completes. A hold counts only after Windows reports the key down. If key state is lost, the continuous timer restarts. Pickup is disarmed after collection until a lower percentage or a confirmed new meter establishes a new cycle, preventing repeated pickup from stale completion text.
 
@@ -79,4 +79,4 @@ Pickup timings are snapshotted when a catch completes. A hold counts only after 
 
 The automated suite includes 1,000 simulated collection cycles, exact wait/hold boundaries, stale-percentage suppression, missed-low-percentage recovery, focus interruption, failed key confirmation, and capture retry limits. GitHub Actions runs the suite on Windows with Python 3.11, 3.12, and 3.13.
 
-A local capture stress check exercised 1,000 region captures with alternating sizes and returned GDI resource usage to its initial count. Simulated tests and resource checks do not replace live gameplay validation.
+These checks use synthetic images and simulated input. They do not replace live gameplay validation, and the 60 Hz loop target is not a measured performance guarantee.
